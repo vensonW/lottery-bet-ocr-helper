@@ -1,0 +1,27 @@
+# 本地配置/密钥
+config.ini
+config.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# uv / 依赖缓存
+.uv_cache/
+
+# Node 依赖/日志
+node_modules/
+node.*.log
+
+# 识别输入图片与压缩包
+2026-*/
+*.zip
+
+# 输出结果与截图
+outputs/
+
+# 临时检查文件
+.pycache_check/
