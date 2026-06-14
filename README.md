@@ -57,7 +57,7 @@ Pillow
 openpyxl
 ```
 
-不会安装 PySide6。
+不会安装 PySide6-Essentials。
 
 ## 3. 命令行批量处理
 
@@ -139,16 +139,62 @@ Excel 包含：
 序号 | 原图识别内容 | 玩法判定 | 标准化结果 | 金额(元) | 需人工核查 | 核查原因/备注 | 核查截图 | 图片文件名
 ```
 
-## 5. 桌面界面稍后启用
+## 5. 桌面界面
 
-等命令行测试没问题后，再安装 GUI：
+源码方式启动桌面界面：
 
 ```powershell
 .\install_gui.bat
 .\run_gui.bat
 ```
 
-## 6. 说明
+桌面界面支持：
+
+- 选择图片文件夹
+- 设置输出根目录
+- 配置 API Key、模型、base_url、proxy
+- 设置并发 job、超时时间、重试次数
+- 勾选 `只重新识别已有Excel中需人工核查的图片`
+- 勾选 `离线演示模式` 不调用 OpenAI
+
+默认输出仍按图片文件夹名分组：
+
+```text
+输出根目录\图片文件夹名\识别结果\投注识别统计_图片文件夹名.xlsx
+```
+
+## 6. 打包 exe
+
+在开发电脑执行：
+
+```powershell
+.\build_exe.bat
+```
+
+首次打包会下载/准备 PySide6-Essentials 和 PyInstaller，速度可能较慢。
+
+打包完成后会生成：
+
+```text
+dist\lottery-bet-ocr-helper\lottery-bet-ocr-helper.exe
+dist\lottery-bet-ocr-helper.zip
+```
+
+发给别人时，推荐直接发送：
+
+```text
+dist\lottery-bet-ocr-helper.zip
+```
+
+对方解压后双击：
+
+```text
+lottery-bet-ocr-helper.exe
+```
+
+首次使用在界面里填写 API Key、base_url 等配置，点击“保存配置”会在 exe 同级目录生成 `config.ini`。
+
+## 7. 说明
 
 AI 不直接生成截图文件。AI 返回需要核查区域的坐标，程序从原图裁剪截图并贴入 Excel。这样截图一定来自原图，避免 AI 改写或幻觉。
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -19,12 +20,23 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QCheckBox,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from batch_runner import BatchOptions, run_batch
 from config import AppConfig, load_config, resolve_app_path, save_config
+
+
+MODEL_OPTIONS = [
+    "gpt-5.5",
+    "gpt-5.1",
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4o",
+    "gpt-4o-mini",
+]
 
 
 class BatchWorker(QObject):
@@ -46,9 +58,10 @@ class BatchWorker(QObject):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, root_dir: Path) -> None:
+    def __init__(self, root_dir: Path, resource_dir: Path | None = None) -> None:
         super().__init__()
         self.root_dir = root_dir
+        self.resource_dir = resource_dir or root_dir
         self.config = load_config(root_dir)
         self.thread: QThread | None = None
         self.worker: BatchWorker | None = None
@@ -68,15 +81,25 @@ class MainWindow(QMainWindow):
         self.output_edit = QLineEdit()
         self.api_key_edit = QLineEdit()
         self.api_key_edit.setEchoMode(QLineEdit.Password)
-        self.model_edit = QLineEdit()
+        self.api_key_toggle_btn = QToolButton()
+        self.api_key_toggle_btn.setText("👁")
+        self.api_key_toggle_btn.setCheckable(True)
+        self.api_key_toggle_btn.setToolTip("显示/隐藏 API Key")
+        self.api_key_toggle_btn.clicked.connect(self.toggle_api_key_visibility)
+        self.model_combo = QComboBox()
+        self.model_combo.setEditable(False)
+        self.model_combo.addItems(MODEL_OPTIONS)
+        self.base_url_edit = QLineEdit()
         self.job_spin = QSpinBox()
         self.job_spin.setRange(1, 20)
-        self.max_side_spin = QSpinBox()
-        self.max_side_spin.setRange(512, 6000)
-        self.max_side_spin.setSingleStep(256)
         self.retry_spin = QSpinBox()
         self.retry_spin.setRange(0, 5)
+        self.timeout_spin = QSpinBox()
+        self.timeout_spin.setRange(30, 1800)
+        self.timeout_spin.setSingleStep(30)
         self.mock_check = QCheckBox("离线演示模式（不调用OpenAI）")
+        self.reprocess_review_check = QCheckBox("只重新识别已有Excel中需人工核查的图片")
+        self.verbose_check = QCheckBox("打印详细日志")
 
         input_row = QHBoxLayout()
         input_row.addWidget(self.input_edit)
@@ -90,14 +113,21 @@ class MainWindow(QMainWindow):
         output_btn.clicked.connect(self.choose_output_dir)
         output_row.addWidget(output_btn)
 
+        api_key_row = QHBoxLayout()
+        api_key_row.addWidget(self.api_key_edit)
+        api_key_row.addWidget(self.api_key_toggle_btn)
+
         form.addRow("图片文件夹：", input_row)
-        form.addRow("输出目录：", output_row)
-        form.addRow("OpenAI API Key：", self.api_key_edit)
-        form.addRow("模型：", self.model_edit)
+        form.addRow("输出根目录：", output_row)
+        form.addRow("OpenAI API Key：", api_key_row)
+        form.addRow("模型：", self.model_combo)
+        form.addRow("base_url：", self.base_url_edit)
         form.addRow("并发 job 数：", self.job_spin)
-        form.addRow("图片最长边：", self.max_side_spin)
         form.addRow("失败重试次数：", self.retry_spin)
+        form.addRow("AI超时秒数：", self.timeout_spin)
         form.addRow("", self.mock_check)
+        form.addRow("", self.reprocess_review_check)
+        form.addRow("", self.verbose_check)
         layout.addLayout(form)
 
         btn_row = QHBoxLayout()
@@ -123,20 +153,42 @@ class MainWindow(QMainWindow):
     def _load_config_to_ui(self) -> None:
         self.output_edit.setText(str(resolve_app_path(self.root_dir, self.config.default_output_dir, "outputs")))
         self.api_key_edit.setText(self.config.api_key)
-        self.model_edit.setText(self.config.model)
+        self._set_model_combo_value(self.config.model)
+        self.base_url_edit.setText(self.config.base_url)
         self.job_spin.setValue(int(self.config.default_job_count or 3))
-        self.max_side_spin.setValue(int(self.config.max_image_side or 2048))
         self.retry_spin.setValue(int(self.config.retry_count or 2))
+        self.timeout_spin.setValue(int(self.config.ai_timeout_seconds or 120))
 
     def _config_from_ui(self) -> AppConfig:
         return AppConfig(
             api_key=self.api_key_edit.text().strip(),
-            model=self.model_edit.text().strip() or "gpt-5.5",
+            model=self.model_combo.currentText().strip() or self.config.model or "gpt-5.5",
+            base_url=self.base_url_edit.text().strip(),
+            proxy=self.config.proxy,
             default_job_count=self.job_spin.value(),
             default_output_dir=self.output_edit.text().strip() or "outputs",
-            max_image_side=self.max_side_spin.value(),
+            max_image_side=self.config.max_image_side,
             retry_count=self.retry_spin.value(),
+            ai_timeout_seconds=self.timeout_spin.value(),
         )
+
+    def _set_model_combo_value(self, model: str) -> None:
+        model = (model or "gpt-5.5").strip()
+        if self.model_combo.findText(model) < 0:
+            # 兼容 config.ini 里已经保存的自定义模型名，但界面仍不允许手动输入。
+            self.model_combo.addItem(model)
+        self.model_combo.setCurrentText(model)
+
+    @Slot()
+    def toggle_api_key_visibility(self) -> None:
+        if self.api_key_toggle_btn.isChecked():
+            self.api_key_edit.setEchoMode(QLineEdit.Normal)
+            self.api_key_toggle_btn.setText("🙈")
+            self.api_key_toggle_btn.setToolTip("隐藏 API Key")
+        else:
+            self.api_key_edit.setEchoMode(QLineEdit.Password)
+            self.api_key_toggle_btn.setText("👁")
+            self.api_key_toggle_btn.setToolTip("显示 API Key")
 
     @Slot()
     def choose_input_dir(self) -> None:
@@ -146,7 +198,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def choose_output_dir(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "选择输出目录", str(self.root_dir / "outputs"))
+        folder = QFileDialog.getExistingDirectory(self, "选择输出根目录", str(self.root_dir / "outputs"))
         if folder:
             self.output_edit.setText(folder)
 
@@ -154,7 +206,7 @@ class MainWindow(QMainWindow):
     def save_current_config(self) -> None:
         self.config = self._config_from_ui()
         save_config(self.root_dir, self.config)
-        QMessageBox.information(self, "已保存", "配置已保存到 config.json")
+        QMessageBox.information(self, "已保存", "配置已保存到 config.ini")
 
     @Slot()
     def start_batch(self) -> None:
@@ -165,20 +217,27 @@ class MainWindow(QMainWindow):
         self.config = self._config_from_ui()
         api_key = self.config.resolved_api_key()
         if not api_key and not self.mock_check.isChecked():
-            QMessageBox.warning(self, "错误", "请填写 OpenAI API Key，或设置环境变量 OPENAI_API_KEY")
+            QMessageBox.warning(self, "错误", "config.ini 中缺少 OpenAI API Key，请先配置后再运行。")
             return
 
         save_config(self.root_dir, self.config)
+        output_root = resolve_app_path(self.root_dir, self.config.default_output_dir, "outputs")
         options = BatchOptions(
             input_dir=input_dir,
-            output_dir=resolve_app_path(self.root_dir, self.config.default_output_dir, "outputs"),
+            output_dir=output_root / input_dir.name / "识别结果",
             job_count=self.config.default_job_count,
             api_key=api_key or "mock",
             model=self.config.model,
-            skill_path=self.root_dir / "skills" / "lottery_ocr" / "SKILL.md",
+            skill_path=self.resource_dir / "skills" / "lottery_ocr" / "SKILL.md",
+            output_name=f"投注识别统计_{input_dir.name}",
+            base_url=self.config.base_url,
+            proxy=self.config.proxy,
             max_image_side=self.config.max_image_side,
             retry_count=self.config.retry_count,
             mock=self.mock_check.isChecked(),
+            verbose=self.verbose_check.isChecked(),
+            ai_timeout_seconds=self.config.ai_timeout_seconds,
+            reprocess_review=self.reprocess_review_check.isChecked(),
         )
         self.start_btn.setEnabled(False)
         self.progress.setValue(0)
@@ -220,8 +279,8 @@ class MainWindow(QMainWindow):
         self.log.append(message)
 
 
-def main(root_dir: Path) -> int:
+def main(root_dir: Path, resource_dir: Path | None = None) -> int:
     app = QApplication(sys.argv)
-    win = MainWindow(root_dir)
+    win = MainWindow(root_dir, resource_dir)
     win.show()
     return app.exec()

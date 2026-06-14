@@ -5,8 +5,21 @@ import sys
 from pathlib import Path
 
 
-ROOT_DIR = Path(__file__).resolve().parent
-SRC_DIR = ROOT_DIR / "src"
+# 普通源码运行时：
+#   ROOT_DIR/RESOURCE_DIR = 项目目录
+# PyInstaller 打包后：
+#   ROOT_DIR = exe 所在目录，用于保存 config.ini 和 outputs
+#   RESOURCE_DIR = PyInstaller 解包资源目录，用于读取内置 skills
+if getattr(sys, "frozen", False):
+    ROOT_DIR = Path(sys.executable).resolve().parent
+    RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", ROOT_DIR))
+else:
+    ROOT_DIR = Path(__file__).resolve().parent
+    RESOURCE_DIR = ROOT_DIR
+
+SRC_DIR = RESOURCE_DIR / "src"
+if not SRC_DIR.exists():
+    SRC_DIR = ROOT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
@@ -102,7 +115,7 @@ def run_cli(argv: list[str] | None = None) -> int:
         job_count=max(1, int(config.default_job_count or 1)),
         api_key=api_key,
         model=config.model,
-        skill_path=ROOT_DIR / "skills" / "lottery_ocr" / "SKILL.md",
+        skill_path=RESOURCE_DIR / "skills" / "lottery_ocr" / "SKILL.md",
         output_name=f"投注识别统计_{input_dir.name}",
         base_url=config.base_url,
         proxy=config.proxy,
@@ -130,7 +143,7 @@ def run_gui() -> int:
         print("请先执行：install_gui.bat", file=sys.stderr)
         print(f"错误：{exc}", file=sys.stderr)
         return 2
-    return main(ROOT_DIR)
+    return main(ROOT_DIR, RESOURCE_DIR)
 
 
 if __name__ == "__main__":

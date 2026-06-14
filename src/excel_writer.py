@@ -5,8 +5,7 @@ from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as XLImage
-from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
-from openpyxl.drawing.xdr import XDRPositiveSize2D
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, TwoCellAnchor
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.units import pixels_to_EMU
@@ -18,6 +17,9 @@ from models import BatchSummary, ImageTaskResult, OcrItem
 
 HEADERS = ["序号", "原图识别内容", "玩法判定", "标准化结果", "金额(元)", "需人工核查", "核查原因/备注", "核查截图", "图片文件名"]
 OLD_HEADERS = ["序号", "原图识别内容", "玩法判定", "标准化结果", "金额(元)", "需人工核查", "核查原因/备注", "图片文件名"]
+
+DETAIL_WIDTHS = [8, 26, 14, 32, 12, 14, 48, 112, 42]
+REVIEW_WIDTHS = [8, 42, 30, 72, 112, 20, 20, 20]
 
 
 def read_existing_image_files(output_file: Path) -> set[str]:
@@ -133,10 +135,14 @@ def upgrade_existing_workbook_layout(output_file: Path) -> None:
     if "识别明细" in wb.sheetnames:
         ws_detail = wb["识别明细"]
         _ensure_detail_sheet_layout(ws_detail, output_file)
+        _convert_images_to_move_and_size(ws_detail)
         _apply_image_file_hyperlinks(ws_detail, {}, output_file)
         _refresh_detail_filter_and_table(ws_detail)
     if "截图核对" in wb.sheetnames:
-        _apply_review_sheet_image_file_hyperlinks(wb["截图核对"], {}, output_file)
+        ws_images = wb["截图核对"]
+        _apply_review_column_widths(ws_images)
+        _convert_images_to_move_and_size(ws_images)
+        _apply_review_sheet_image_file_hyperlinks(ws_images, {}, output_file)
     wb.save(output_file)
 
 
@@ -151,6 +157,7 @@ def _append_workbook(
     wb = load_workbook(output_file)
     ws_detail = wb["识别明细"] if "识别明细" in wb.sheetnames else wb.create_sheet("识别明细")
     _ensure_detail_sheet_layout(ws_detail, output_file)
+    _convert_images_to_move_and_size(ws_detail)
 
     replace_image_files = {name for name in (replace_image_files or set()) if name}
     if replace_image_files:
@@ -166,6 +173,8 @@ def _append_workbook(
 
     ws_images = wb["截图核对"] if "截图核对" in wb.sheetnames else wb.create_sheet("截图核对")
     _ensure_review_sheet_header(ws_images)
+    _apply_review_column_widths(ws_images)
+    _convert_images_to_move_and_size(ws_images)
     if replace_image_files:
         _clear_review_rows_for_images(ws_images, replace_image_files)
     _append_review_items_sheet(ws_images, [item for item in new_rows if item.needs_review], image_path_map=image_path_map, output_file=output_file)
@@ -200,9 +209,20 @@ def _reset_detail_sheet(ws) -> None:
     _write_detail_sheet(ws, [])
 
 
+def _apply_detail_column_widths(ws) -> None:
+    for idx, width in enumerate(DETAIL_WIDTHS, start=1):
+        ws.column_dimensions[get_column_letter(idx)].width = width
+
+
+def _apply_review_column_widths(ws) -> None:
+    for idx, width in enumerate(REVIEW_WIDTHS, start=1):
+        ws.column_dimensions[get_column_letter(idx)].width = width
+
+
 def _ensure_detail_sheet_layout(ws, output_file: Path) -> None:
     current = [ws.cell(row=1, column=i).value for i in range(1, max(len(HEADERS), len(OLD_HEADERS)) + 1)]
     if current[: len(HEADERS)] == HEADERS:
+        _apply_detail_column_widths(ws)
         return
     if current[: len(OLD_HEADERS)] == OLD_HEADERS:
         # 兼容旧版：在“核查原因/备注”和“图片文件名”之间插入“核查截图”列。
@@ -223,6 +243,7 @@ def _ensure_detail_sheet_layout(ws, output_file: Path) -> None:
                     marker.rowOff = pixels_to_EMU(6)
             except Exception:
                 pass
+        _apply_detail_column_widths(ws)
         return
     raise RuntimeError(f"目标Excel格式不正确，缺少标准表头，已停止追加以避免覆盖旧内容：{output_file}")
 
@@ -247,9 +268,7 @@ def _append_detail_rows(
     if not rows:
         return
 
-    widths = [8, 26, 14, 32, 12, 14, 48, 92, 42]
-    for idx, width in enumerate(widths, start=1):
-        ws.column_dimensions[get_column_letter(idx)].width = width
+    _apply_detail_column_widths(ws)
 
     thin = Side(style="thin", color="D9E2F3")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -341,6 +360,97 @@ def _remove_images_anchored_to_rows(ws, rows: set[int]) -> None:
         ws._images = kept_images
     except Exception:
         pass
+
+
+def _emu_to_pixels(value: int | float | None) -> int:
+    if value in (None, ""):
+        return 0
+    try:
+        return max(0, int(round(float(value) / 9525)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _copy_anchor_marker(marker: AnchorMarker) -> AnchorMarker:
+    return AnchorMarker(
+        col=int(getattr(marker, "col", 0) or 0),
+        colOff=int(getattr(marker, "colOff", 0) or 0),
+        row=int(getattr(marker, "row", 0) or 0),
+        rowOff=int(getattr(marker, "rowOff", 0) or 0),
+    )
+
+
+def _make_two_cell_anchor(
+    row_idx: int,
+    col_idx: int,
+    image_width_px: int,
+    image_height_px: int,
+    padding_px: int = 6,
+    start_marker: AnchorMarker | None = None,
+) -> TwoCellAnchor:
+    """让图片随单元格移动和缩放，筛选隐藏行时不会全部叠在一起。"""
+    if start_marker is None:
+        start = AnchorMarker(
+            col=col_idx - 1,
+            colOff=pixels_to_EMU(padding_px),
+            row=row_idx - 1,
+            rowOff=pixels_to_EMU(padding_px),
+        )
+    else:
+        start = _copy_anchor_marker(start_marker)
+
+    start_col_off_px = _emu_to_pixels(start.colOff)
+    start_row_off_px = _emu_to_pixels(start.rowOff)
+    end = AnchorMarker(
+        # 截图列已经加宽，图片锚点尽量放在同一行同一列内。
+        # 这样筛选隐藏该行时，图片高度会随行一起压缩，不会漂浮覆盖到可见行。
+        col=start.col,
+        colOff=pixels_to_EMU(start_col_off_px + max(1, int(image_width_px))),
+        row=start.row,
+        rowOff=pixels_to_EMU(start_row_off_px + max(1, int(image_height_px))),
+    )
+    return TwoCellAnchor(editAs="twoCell", _from=start, to=end)
+
+
+def _add_image_to_cell(ws, image_path: Path, row_idx: int, col_idx: int, image_width: int, image_height: int) -> None:
+    xl_img = XLImage(str(image_path))
+    xl_img.width = image_width
+    xl_img.height = image_height
+    xl_img.anchor = _make_two_cell_anchor(row_idx, col_idx, image_width, image_height)
+    ws.add_image(xl_img)
+
+
+def _image_display_size_px(image) -> tuple[int, int]:
+    width = int(round(float(getattr(image, "width", 0) or 0)))
+    height = int(round(float(getattr(image, "height", 0) or 0)))
+    ext = getattr(getattr(image, "anchor", None), "ext", None)
+    if (width <= 0 or height <= 0) and ext is not None:
+        if width <= 0:
+            width = _emu_to_pixels(getattr(ext, "cx", 0))
+        if height <= 0:
+            height = _emu_to_pixels(getattr(ext, "cy", 0))
+    return max(1, width or 160), max(1, height or 120)
+
+
+def _convert_images_to_move_and_size(ws) -> None:
+    """把旧版浮动截图改成“随单元格移动和缩放”，解决筛选后截图叠加。"""
+    for image in getattr(ws, "_images", []):
+        try:
+            anchor = image.anchor
+            marker = getattr(anchor, "_from", None)
+            if marker is None:
+                continue
+            image_width, image_height = _image_display_size_px(image)
+            image.anchor = _make_two_cell_anchor(
+                row_idx=int(marker.row) + 1,
+                col_idx=int(marker.col) + 1,
+                image_width_px=image_width,
+                image_height_px=image_height,
+                start_marker=marker,
+            )
+        except Exception:
+            # 锚点升级失败不影响数据本身；后续新插入图片仍会使用新锚点。
+            continue
 
 
 def _refresh_detail_filter_and_table(ws) -> None:
@@ -476,15 +586,7 @@ def _append_review_items_sheet(
             with PILImage.open(item.crop_path) as img:
                 image_width, image_height = img.size
             ws.row_dimensions[row].height = max(120, (image_height + 18) * 0.75)
-            xl_img = XLImage(str(item.crop_path))
-            xl_img.width = image_width
-            xl_img.height = image_height
-            marker = AnchorMarker(col=4, colOff=pixels_to_EMU(6), row=row - 1, rowOff=pixels_to_EMU(6))
-            xl_img.anchor = OneCellAnchor(
-                _from=marker,
-                ext=XDRPositiveSize2D(pixels_to_EMU(image_width), pixels_to_EMU(image_height)),
-            )
-            ws.add_image(xl_img)
+            _add_image_to_cell(ws, item.crop_path, row, col_idx=5, image_width=image_width, image_height=image_height)
         else:
             ws.row_dimensions[row].height = 80
         row += 1
@@ -513,9 +615,7 @@ def _write_detail_sheet(
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:I{max(1, len(rows) + 1)}"
 
-    widths = [8, 26, 14, 32, 12, 14, 48, 92, 42]
-    for idx, width in enumerate(widths, start=1):
-        ws.column_dimensions[get_column_letter(idx)].width = width
+    _apply_detail_column_widths(ws)
 
     header_fill = PatternFill("solid", fgColor="1F4E78")
     header_font = Font(color="FFFFFF", bold=True)
@@ -576,20 +676,7 @@ def _attach_review_image(ws, item: OcrItem, row_idx: int, col_idx: int) -> None:
         with PILImage.open(item.crop_path) as img:
             image_width, image_height = img.size
             ws.row_dimensions[row_idx].height = max(170, (max(text_height_px, image_height) + 28) * 0.75)
-        xl_img = XLImage(str(item.crop_path))
-        xl_img.width = image_width
-        xl_img.height = image_height
-        marker = AnchorMarker(
-            col=col_idx - 1,
-            colOff=pixels_to_EMU(6),
-            row=row_idx - 1,
-            rowOff=pixels_to_EMU(6),
-        )
-        xl_img.anchor = OneCellAnchor(
-            _from=marker,
-            ext=XDRPositiveSize2D(pixels_to_EMU(image_width), pixels_to_EMU(image_height)),
-        )
-        ws.add_image(xl_img)
+        _add_image_to_cell(ws, item.crop_path, row_idx, col_idx=col_idx, image_width=image_width, image_height=image_height)
     else:
         ws.row_dimensions[row_idx].height = max(120, (text_height_px + default_image_height_px) * 0.75)
 
@@ -688,8 +775,7 @@ def _write_review_images_sheet(
     headers = ["序号", "图片文件名", "原图识别内容", "核查原因/备注", "核查截图"]
     ws.append([])
     ws.append(headers)
-    for col, width in enumerate([8, 42, 30, 72, 92, 20, 20, 20], start=1):
-        ws.column_dimensions[get_column_letter(col)].width = width
+    _apply_review_column_widths(ws)
     for cell in ws[3]:
         cell.fill = PatternFill("solid", fgColor="D9EAD3")
         cell.font = Font(bold=True)
@@ -709,15 +795,7 @@ def _write_review_images_sheet(
             with PILImage.open(item.crop_path) as img:
                 image_width, image_height = img.size
             ws.row_dimensions[row].height = max(170, (image_height + 28) * 0.75)
-            xl_img = XLImage(str(item.crop_path))
-            xl_img.width = image_width
-            xl_img.height = image_height
-            marker = AnchorMarker(col=4, colOff=pixels_to_EMU(6), row=row - 1, rowOff=pixels_to_EMU(6))
-            xl_img.anchor = OneCellAnchor(
-                _from=marker,
-                ext=XDRPositiveSize2D(pixels_to_EMU(image_width), pixels_to_EMU(image_height)),
-            )
-            ws.add_image(xl_img)
+            _add_image_to_cell(ws, item.crop_path, row, col_idx=5, image_width=image_width, image_height=image_height)
         else:
             ws.row_dimensions[row].height = 80
         row += 1

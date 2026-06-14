@@ -23,5 +23,10 @@ node.*.log
 # 输出结果与截图
 outputs/
 
+# 打包产物
+build/
+dist/
+*.spec
+
 # 临时检查文件
 .pycache_check/
