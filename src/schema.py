@@ -38,6 +38,16 @@ LOTTERY_OCR_SCHEMA = {
                         "type": "string",
                         "description": "只有需要人工核查时填写具体原因；正常项为空字符串",
                     },
+                    "digit_confidence_notes": {
+                        "type": "string",
+                        "description": "数字识别置信度备注。若任一投注数字或数字个数低于90%把握，必须填写候选数字/数字数量及概率，例如：末位数字疑似9(70%)，也可能是8(30%)；或数字串279约70%，2479约30%；否则为空字符串",
+                    },
+                    "min_digit_confidence": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100,
+                        "description": "本投注行中所有投注数字的最低识别把握百分比，0-100。若任一数字或数字个数低于90%把握，必须小于90并标记人工核查；全部确定时填100或不低于90的数值",
+                    },
                     "crop_hint": {
                         "type": ["object", "null"],
                         "properties": {
@@ -58,6 +68,8 @@ LOTTERY_OCR_SCHEMA = {
                     "amount",
                     "needs_review",
                     "review_reason",
+                    "digit_confidence_notes",
+                    "min_digit_confidence",
                     "crop_hint",
                 ],
                 "additionalProperties": False,

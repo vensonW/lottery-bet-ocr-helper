@@ -12,6 +12,7 @@ GROUP_STANDARDIZED_RE = re.compile(r"福(?P<digits>\d{3,})(?P<group_type>组三|
 SAME_DIGIT_STANDARDIZED_RE = re.compile(r"福(?:胆)?(?P<digits>(?P<digit>\d)(?P=digit){2,})(?:组三|组六|直)?各(?P<amount>\d+)元")
 DAN_STANDARDIZED_RE = re.compile(r"福胆(?P<digits>\d+)各\d+元")
 RAW_NUMBER_OR_POSITION_RE = re.compile(r"[0-9xX×＊*✕✖╳]+")
+POSITION_STANDARDIZED_RE = re.compile(r"福(?P<body>[0-9*\-—–－\s]+)定各(?P<amount>\d+)元")
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -21,6 +22,11 @@ def _as_int(value: Any, default: int = 0) -> int:
         return int(round(float(value)))
     except (TypeError, ValueError):
         return default
+
+
+def _as_confidence(value: Any, default: int = 100) -> int:
+    confidence = _as_int(value, default)
+    return max(0, min(100, confidence))
 
 
 def _as_bool(value: Any) -> bool:
@@ -94,6 +100,11 @@ def validate_ai_result(
             review_reason=str(item_data.get("review_reason") or "").strip(),
             crop_hint=CropHint.from_value(item_data.get("crop_hint")),
         )
+        _apply_digit_confidence(
+            item,
+            _as_confidence(item_data.get("min_digit_confidence", 100), 100),
+            str(item_data.get("digit_confidence_notes") or "").strip(),
+        )
         _apply_safety_checks(item)
         result.items.append(item)
 
@@ -130,6 +141,35 @@ def _mark_review(item: OcrItem, reason: str) -> None:
     item.needs_review = True
     if reason and reason not in item.review_reason:
         item.review_reason = f"{item.review_reason}；{reason}" if item.review_reason else reason
+
+
+def _has_meaningful_confidence_notes(notes: str) -> bool:
+    if not notes.strip():
+        return False
+    ignored_notes = {"无", "无不确定数字", "全部确定", "全部>=90%", "全部大于等于90%"}
+    return notes.strip() not in ignored_notes
+
+
+def _apply_digit_confidence(item: OcrItem, min_digit_confidence: int, notes: str) -> None:
+    """AI认为任一数字低于90%把握时，强制人工核查并把概率估计写入备注。"""
+    has_notes = _has_meaningful_confidence_notes(notes)
+
+    if min_digit_confidence < 90:
+        if has_notes:
+            reason = f"数字识别置信度低于90%，最低置信度{min_digit_confidence}%；概率估计：{notes}"
+        else:
+            reason = f"数字识别置信度低于90%，最低置信度{min_digit_confidence}%；概率估计：AI未提供"
+        _mark_review(item, reason)
+        return
+
+    if not has_notes:
+        return
+
+    if "%" in notes or "％" in notes:
+        reason = f"数字识别置信度低于90%，概率估计：{notes}"
+    else:
+        reason = f"数字识别置信度低于90%，需人工核查：{notes}"
+    _mark_review(item, reason)
 
 
 def _raw_text_before_amount(item: OcrItem) -> str:
@@ -184,6 +224,27 @@ def _fill_standardized_candidate(item: OcrItem) -> None:
 
     digits = _first_digit_sequence_before_amount(item)
     if not digits:
+        return
+
+    if item.play_type == "未知":
+        # AI 有时会因为“未标注玩法”返回未知并留空标准化。
+        # 对能按明确规则推断的内容直接补候选；仍无法确认玩法的两位数，至少展示可核查候选文本。
+        position_digits = _first_position_sequence_before_amount(item)
+        if POSITION_SYMBOL_RE.search(position_digits):
+            item.play_type = "定位"
+            item.standardized = f"福{position_digits}定各{item.amount}元"
+        elif len(digits) == 1:
+            item.play_type = "胆码"
+            item.standardized = f"福胆{digits}各{item.amount}元"
+        elif len(digits) >= 3:
+            if len(set(digits)) == 1:
+                item.play_type = "直选"
+                item.standardized = f"福{digits}直各{item.amount}元"
+            else:
+                item.play_type = "组六"
+                item.standardized = f"福{digits}组六各{item.amount}元"
+        else:
+            item.standardized = f"待核查：{digits}各{item.amount}元（玩法未确认）"
         return
 
     if item.play_type == "胆码":
@@ -257,6 +318,21 @@ def _apply_group_ascending_checks(item: OcrItem) -> None:
             _mark_review(item, "组选数字串不符合从小到大书写规律，需核查是否识别错误")
 
 
+def _normalize_position_standardized(item: OcrItem) -> None:
+    if item.play_type != "定位" and "定各" not in item.standardized:
+        return
+
+    match = POSITION_STANDARDIZED_RE.search(item.standardized)
+    if not match:
+        return
+
+    body = match.group("body")
+    # 定位数字串中只保留数字和*。数字与X/*之间的空格或误加的-不属于定位内容。
+    normalized_body = re.sub(r"[^0-9*]", "", body)
+    if normalized_body and normalized_body != body:
+        item.standardized = f"福{normalized_body}定各{match.group('amount')}元"
+
+
 def _apply_safety_checks(item: OcrItem) -> None:
     if item.amount < 0:
         item.amount = 0
@@ -274,6 +350,8 @@ def _apply_safety_checks(item: OcrItem) -> None:
 
     if not item.standardized:
         _mark_review(item, "标准化结果为空")
+
+    _normalize_position_standardized(item)
 
     # 最高优先级：999、5555 这类连续3个及以上相同数字，按直选，不按默认组六/组三。
     _apply_same_digit_direct_priority(item)

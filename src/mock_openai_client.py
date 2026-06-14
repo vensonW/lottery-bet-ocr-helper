@@ -46,6 +46,8 @@ class MockLotteryOcrClient:
                     "amount": 200,
                     "needs_review": False,
                     "review_reason": "",
+                    "digit_confidence_notes": "",
+                    "min_digit_confidence": 100,
                     "crop_hint": None,
                 },
                 {
@@ -55,6 +57,8 @@ class MockLotteryOcrClient:
                     "amount": 200,
                     "needs_review": True,
                     "review_reason": "离线演示：数字不清晰，需人工核查",
+                    "digit_confidence_notes": "末位数字：1约65%，7约35%",
+                    "min_digit_confidence": 65,
                     "crop_hint": review_crop,
                 },
             ],

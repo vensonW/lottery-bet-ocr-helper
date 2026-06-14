@@ -79,10 +79,13 @@ def clamp_crop_to_original(hint: CropHint | None, prepared: PreparedImage, paddi
     y = int(round(hint.y * prepared.scale_y))
     w = int(round(hint.w * prepared.scale_x))
     h = int(round(hint.h * prepared.scale_y))
-    # AI 给出的局部框经常偏紧，手写数字容易被裁掉。
-    # 横向和纵向都保留更大的上下文，方便人工核查。
+    # AI 给出的局部框有时偏紧：横向多留，避免金额或玩法字被裁掉；
+    # 纵向少留且设置上限，避免把上下相邻投注行也截进来。
     pad_x = max(60, int(w * padding_ratio))
-    pad_y = max(45, int(h * max(padding_ratio, 0.65)))
+    pad_y = max(18, min(42, int(h * 0.28)))
+    max_total_height = max(80, min(180, int(h * 1.65)))
+    if h + pad_y * 2 > max_total_height:
+        pad_y = max(8, (max_total_height - h) // 2)
     left = max(0, x - pad_x)
     top = max(0, y - pad_y)
     right = min(prepared.original_width, x + w + pad_x)
