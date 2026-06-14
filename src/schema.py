@@ -24,7 +24,7 @@ LOTTERY_OCR_SCHEMA = {
                     },
                     "standardized": {
                         "type": "string",
-                        "description": "按SKILL.md规则整理后的标准化结果；不确定时可为空",
+                        "description": "按SKILL.md规则整理后的标准化结果；需要人工核查时也要尽量填写候选标准化结果，确实无法组成结果时才可为空",
                     },
                     "amount": {
                         "type": "integer",

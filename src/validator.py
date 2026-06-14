@@ -11,6 +11,7 @@ POSITION_SYMBOL_RE = re.compile(r"[xX×＊*✕✖╳]")
 GROUP_STANDARDIZED_RE = re.compile(r"福(?P<digits>\d{3,})(?P<group_type>组三|组六)")
 SAME_DIGIT_STANDARDIZED_RE = re.compile(r"福(?:胆)?(?P<digits>(?P<digit>\d)(?P=digit){2,})(?:组三|组六|直)?各(?P<amount>\d+)元")
 DAN_STANDARDIZED_RE = re.compile(r"福胆(?P<digits>\d+)各\d+元")
+RAW_NUMBER_OR_POSITION_RE = re.compile(r"[0-9xX×＊*✕✖╳]+")
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -131,6 +132,68 @@ def _mark_review(item: OcrItem, reason: str) -> None:
         item.review_reason = f"{item.review_reason}；{reason}" if item.review_reason else reason
 
 
+def _raw_text_before_amount(item: OcrItem) -> str:
+    raw_text = item.raw_text.strip()
+    if not raw_text or item.amount <= 0:
+        return raw_text
+
+    # 尽量去掉行尾金额，避免把金额当成投注数字串。
+    amount = re.escape(str(item.amount))
+    match = re.search(rf"^(.*?)(?:[-—–－~～=＝各\s]+){amount}\s*(?:元)?\s*$", raw_text)
+    if match and match.group(1).strip():
+        return match.group(1).strip()
+    return raw_text
+
+
+def _first_digit_sequence_before_amount(item: OcrItem) -> str:
+    text = _raw_text_before_amount(item)
+    matches = re.findall(r"\d+", text)
+    if not matches:
+        return ""
+    return matches[0]
+
+
+def _first_position_sequence_before_amount(item: OcrItem) -> str:
+    text = _raw_text_before_amount(item)
+    for match in RAW_NUMBER_OR_POSITION_RE.findall(text):
+        if re.search(r"\d", match):
+            return POSITION_SYMBOL_RE.sub("*", match)
+    return ""
+
+
+def _fill_standardized_candidate(item: OcrItem) -> None:
+    """核查项也尽量填写候选标准化结果，方便人工直接对照修改。"""
+    if item.standardized or item.amount <= 0:
+        return
+
+    if item.play_type == "直选组选混合":
+        text = _raw_text_before_amount(item)
+        match = re.search(r"(?P<digits>\d+).*?直\s*(?P<direct>\d+).*?组\s*(?P<group>\d+)", text)
+        if match:
+            item.standardized = (
+                f"福{match.group('digits')}直各{match.group('direct')}元"
+                f"组各{match.group('group')}元"
+            )
+        return
+
+    if item.play_type == "定位":
+        position_digits = _first_position_sequence_before_amount(item)
+        if position_digits:
+            item.standardized = f"福{position_digits}定各{item.amount}元"
+        return
+
+    digits = _first_digit_sequence_before_amount(item)
+    if not digits:
+        return
+
+    if item.play_type == "胆码":
+        item.standardized = f"福胆{digits}各{item.amount}元"
+    elif item.play_type in {"组三", "组六"}:
+        item.standardized = f"福{digits}{item.play_type}各{item.amount}元"
+    elif item.play_type == "直选":
+        item.standardized = f"福{digits}直各{item.amount}元"
+
+
 def _is_non_decreasing_digits(digits: str) -> bool:
     return all(left <= right for left, right in zip(digits, digits[1:]))
 
@@ -205,6 +268,10 @@ def _apply_safety_checks(item: OcrItem) -> None:
         _mark_review(item, "玩法类型不在允许范围内")
     if not item.raw_text:
         _mark_review(item, "原图识别内容为空")
+
+    # 即使需要人工核查，也尽量填入候选标准化结果，便于人工在Excel中直接核对。
+    _fill_standardized_candidate(item)
+
     if not item.standardized:
         _mark_review(item, "标准化结果为空")
 
