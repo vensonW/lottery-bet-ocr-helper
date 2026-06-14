@@ -136,6 +136,12 @@ class LotteryOcrClient:
         text = getattr(response, "output_text", None)
         if text:
             return text
+
+        plain_response = LotteryOcrClient._to_plain_response(response)
+        text = LotteryOcrClient._extract_output_text_from_plain(plain_response)
+        if text:
+            return text
+
         # 兼容 SDK 对象或 dict 的不同结构。
         output = getattr(response, "output", None)
         if output is None and isinstance(response, dict):
@@ -156,4 +162,123 @@ class LotteryOcrClient:
                         chunks.append(value)
             if chunks:
                 return "".join(chunks)
-        raise ValueError("无法从 OpenAI 响应中提取文本")
+
+        summary = LotteryOcrClient._summarize_response(plain_response)
+        raise ValueError(f"无法从 OpenAI 响应中提取文本；响应摘要：{summary}")
+
+    @staticmethod
+    def _to_plain_response(response: Any) -> Any:
+        """把 OpenAI SDK 对象尽量转成普通 dict，便于兼容不同网关/SDK结构。"""
+        if isinstance(response, (dict, list, str, int, float, bool)) or response is None:
+            return response
+        for method_name in ("model_dump", "to_dict", "dict"):
+            method = getattr(response, method_name, None)
+            if callable(method):
+                try:
+                    return method()
+                except Exception:
+                    pass
+        try:
+            return json.loads(json.dumps(response, default=lambda obj: getattr(obj, "__dict__", str(obj))))
+        except Exception:
+            return {"repr": repr(response)}
+
+    @staticmethod
+    def _extract_output_text_from_plain(data: Any) -> str:
+        """兼容 Responses API、Chat Completions 以及部分中转接口的返回结构。"""
+        if isinstance(data, str):
+            return data.strip()
+        if not isinstance(data, dict):
+            return ""
+
+        # Responses API 快捷字段。
+        output_text = data.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
+
+        # Responses API 标准 output/content 结构。
+        output = data.get("output")
+        if isinstance(output, list):
+            chunks: list[str] = []
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+                content = item.get("content")
+                if isinstance(content, str) and content.strip():
+                    chunks.append(content)
+                    continue
+                if not isinstance(content, list):
+                    continue
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    text = part.get("text") or part.get("content")
+                    if isinstance(text, dict):
+                        text = text.get("value") or text.get("text")
+                    if isinstance(text, str) and text.strip():
+                        chunks.append(text)
+                    elif part.get("json") is not None:
+                        chunks.append(json.dumps(part["json"], ensure_ascii=False))
+                if chunks:
+                    return "".join(chunks).strip()
+
+        # Chat Completions 兼容结构：choices[].message.content
+        choices = data.get("choices")
+        if isinstance(choices, list):
+            chunks = []
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                message = choice.get("message") or {}
+                if isinstance(message, dict):
+                    content = message.get("content")
+                    if isinstance(content, str) and content.strip():
+                        chunks.append(content)
+                    elif isinstance(content, list):
+                        for part in content:
+                            if isinstance(part, dict):
+                                text = part.get("text") or part.get("content")
+                                if isinstance(text, str) and text.strip():
+                                    chunks.append(text)
+                text = choice.get("text")
+                if isinstance(text, str) and text.strip():
+                    chunks.append(text)
+            if chunks:
+                return "".join(chunks).strip()
+
+        return ""
+
+    @staticmethod
+    def _summarize_response(data: Any) -> str:
+        if not isinstance(data, dict):
+            return repr(data)[:800]
+
+        summary: dict[str, Any] = {
+            "status": data.get("status"),
+            "model": data.get("model"),
+            "top_keys": list(data.keys())[:20],
+        }
+        if data.get("error"):
+            summary["error"] = data.get("error")
+        if data.get("incomplete_details"):
+            summary["incomplete_details"] = data.get("incomplete_details")
+
+        output = data.get("output")
+        if isinstance(output, list):
+            output_summary = []
+            for item in output[:5]:
+                if isinstance(item, dict):
+                    content = item.get("content")
+                    content_types = []
+                    if isinstance(content, list):
+                        content_types = [part.get("type") for part in content[:5] if isinstance(part, dict)]
+                    output_summary.append(
+                        {
+                            "type": item.get("type"),
+                            "status": item.get("status"),
+                            "content_types": content_types,
+                        }
+                    )
+            summary["output"] = output_summary
+
+        return json.dumps(summary, ensure_ascii=False, default=str)[:1200]
