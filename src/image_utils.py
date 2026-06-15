@@ -103,6 +103,7 @@ def save_review_crop(
     output_path: Path,
     max_width: int = 760,
     max_height: int = 360,
+    upscale_factor: float = 1.0,
 ) -> tuple[Path, bool]:
     """保存核查截图。返回：(截图路径, 是否使用整图兜底)。"""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -112,6 +113,15 @@ def save_review_crop(
         used_full_image = crop_box is None
         if crop_box is not None:
             img = img.crop(crop_box)
+        if upscale_factor and upscale_factor > 1:
+            width, height = img.size
+            img = img.resize(
+                (
+                    max(1, int(round(width * upscale_factor))),
+                    max(1, int(round(height * upscale_factor))),
+                ),
+                Image.Resampling.LANCZOS,
+            )
         img.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
         if img.mode not in {"RGB", "L"}:
             img = img.convert("RGB")

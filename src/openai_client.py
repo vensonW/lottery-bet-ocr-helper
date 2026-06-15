@@ -131,6 +131,77 @@ class LotteryOcrClient:
             raise ValueError(f"AI返回不是合法JSON：{text[:500]}") from exc
         return data, prepared
 
+    def analyze_review_crop(self, crop_path: Path, source_image_name: str, item_raw_text: str = "") -> tuple[dict[str, Any], PreparedImage]:
+        prepared = prepare_image_for_ai(crop_path, max_side=1600, jpeg_quality=95)
+        prompt = (
+            f"请复核当前放大的单行投注截图，来源原图：{source_image_name}\n"
+            f"截图文件：{crop_path.name}\n"
+            f"首次识别内容：{item_raw_text or '无'}\n"
+            f"发送给你的截图像素尺寸为：宽 {prepared.sent_width}，高 {prepared.sent_height}。\n"
+            "这张图是从原图裁剪并放大的局部区域，只分析当前这一条投注内容。\n"
+            "如果截图边缘有上下残留笔画或其他行内容，请忽略，只识别主体这一行。\n"
+            "所有 crop_hint 坐标必须基于这个截图像素尺寸，左上角为(0,0)，单位为像素。\n"
+            "请严格按 SKILL.md 和 JSON Schema 返回结果，items 只返回一条最可信的复核结果。不要输出 Markdown 或解释文字。"
+        )
+        instructions = (
+            "你必须严格执行下面的 SKILL.md 规则，并输出符合 JSON Schema 的结构化数据。\n"
+            "这是二次放大单行复核，重点判断数字、玩法和金额是否能达到90%以上把握；"
+            "低于90%必须标记人工核查并填写 digit_confidence_notes 与 min_digit_confidence。\n\n"
+            "=== SKILL.md 开始 ===\n"
+            f"{self.skill_text}\n"
+            "=== SKILL.md 结束 ==="
+        )
+        self._debug(
+            "\n".join(
+                [
+                    f"准备发送二次放大复核给 AI：{crop_path.name}",
+                    f"- 来源原图：{source_image_name}",
+                    f"- 截图尺寸：{prepared.original_width}x{prepared.original_height}",
+                    f"- 发送尺寸：{prepared.sent_width}x{prepared.sent_height}",
+                    f"- MIME：{prepared.mime_type}",
+                    f"- 模型：{self.model}",
+                    f"- prompt：{prompt}",
+                    "- 图片 base64 内容已省略",
+                ]
+            )
+        )
+
+        response = self.client.responses.create(
+            model=self.model,
+            instructions=instructions,
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt},
+                        {
+                            "type": "input_image",
+                            "image_url": prepared.data_url,
+                            "detail": "high",
+                        },
+                    ],
+                }
+            ],
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "lottery_ocr_response",
+                    "description": "投注图片单行复核结果",
+                    "schema": LOTTERY_OCR_SCHEMA,
+                    "strict": True,
+                },
+            },
+            max_output_tokens=3000,
+            store=False,
+        )
+        text = self._extract_output_text(response)
+        self._debug(f"AI 二次放大复核原始返回：{text}")
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"AI二次复核返回不是合法JSON：{text[:500]}") from exc
+        return data, prepared
+
     @staticmethod
     def _extract_output_text(response: Any) -> str:
         text = getattr(response, "output_text", None)

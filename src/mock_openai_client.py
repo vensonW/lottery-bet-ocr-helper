@@ -66,3 +66,25 @@ class MockLotteryOcrClient:
         }
         self._debug(f"离线演示返回：{data}")
         return data, prepared
+
+    def analyze_review_crop(self, crop_path: Path, source_image_name: str, item_raw_text: str = "") -> tuple[dict[str, Any], PreparedImage]:
+        prepared = prepare_image_for_ai(crop_path, max_side=1600)
+        data = {
+            "image_file": crop_path.name,
+            "items": [
+                {
+                    "raw_text": item_raw_text or "二次复核演示 — 200",
+                    "play_type": "未知",
+                    "standardized": "",
+                    "amount": 200,
+                    "needs_review": True,
+                    "review_reason": "离线演示：二次放大后仍需人工核查",
+                    "digit_confidence_notes": "离线演示：最高候选约80%",
+                    "min_digit_confidence": 80,
+                    "crop_hint": None,
+                }
+            ],
+            "image_level_notes": "离线二次放大复核演示数据",
+        }
+        self._debug(f"离线二次放大复核返回：{data}")
+        return data, prepared

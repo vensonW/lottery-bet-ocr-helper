@@ -13,6 +13,7 @@ SAME_DIGIT_STANDARDIZED_RE = re.compile(r"福(?:胆)?(?P<digits>(?P<digit>\d)(?P
 DAN_STANDARDIZED_RE = re.compile(r"福胆(?P<digits>\d+)各\d+元")
 RAW_NUMBER_OR_POSITION_RE = re.compile(r"[0-9xX×＊*✕✖╳]+")
 POSITION_STANDARDIZED_RE = re.compile(r"福(?P<body>[0-9*\-—–－\s]+)定各(?P<amount>\d+)元")
+DIGIT_CANDIDATE_WITH_PERCENT_RE = re.compile(r"(?<!\d)(?P<digit>\d)\s*(?:约|大约|概率|可能|疑似)?\s*[（(]?\s*\d{1,3}\s*[%％]")
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -153,6 +154,8 @@ def _has_meaningful_confidence_notes(notes: str) -> bool:
 def _apply_digit_confidence(item: OcrItem, min_digit_confidence: int, notes: str) -> None:
     """AI认为任一数字低于90%把握时，强制人工核查并把概率估计写入备注。"""
     has_notes = _has_meaningful_confidence_notes(notes)
+    if has_notes:
+        _prefer_ascending_group_candidate_from_notes(item, notes)
 
     if min_digit_confidence < 90:
         if has_notes:
@@ -259,8 +262,97 @@ def _is_non_decreasing_digits(digits: str) -> bool:
     return all(left <= right for left, right in zip(digits, digits[1:]))
 
 
+def _replace_group_digits_in_standardized(item: OcrItem, digits: str) -> None:
+    item.standardized = GROUP_STANDARDIZED_RE.sub(
+        lambda match: f"福{digits}{match.group('group_type')}",
+        item.standardized,
+        count=1,
+    )
+
+
+def _digit_candidates_from_confidence_notes(notes: str) -> list[str]:
+    candidates: list[str] = []
+    for match in DIGIT_CANDIDATE_WITH_PERCENT_RE.finditer(notes):
+        digit = match.group("digit")
+        if digit not in candidates:
+            candidates.append(digit)
+    return candidates
+
+
+def _target_indexes_from_confidence_notes(notes: str, digits: str) -> list[int]:
+    if not digits:
+        return []
+
+    if "末位" in notes or "最后" in notes or "最后一" in notes:
+        return [len(digits) - 1]
+    if "首位" in notes or "第一" in notes or "第1" in notes:
+        return [0]
+
+    chinese_index_map = {
+        "第二": 1,
+        "第2": 1,
+        "第三": 2,
+        "第3": 2,
+        "第四": 3,
+        "第4": 3,
+        "第五": 4,
+        "第5": 4,
+        "第六": 5,
+        "第6": 5,
+        "第七": 6,
+        "第7": 6,
+        "第八": 7,
+        "第8": 7,
+        "第九": 8,
+        "第9": 8,
+    }
+    for key, index in chinese_index_map.items():
+        if key in notes and index < len(digits):
+            return [index]
+
+    return list(range(len(digits)))
+
+
+def _prefer_ascending_group_candidate_from_notes(item: OcrItem, notes: str) -> None:
+    """组选低置信度候选中，如有候选能满足升序习惯，优先写入标准化候选结果。
+
+    该逻辑只改候选标准化结果，不取消人工核查；低于90%的核查仍由置信度规则兜底。
+    """
+    if item.play_type not in {"组三", "组六"} or not notes:
+        return
+
+    match = GROUP_STANDARDIZED_RE.search(item.standardized)
+    if not match:
+        return
+
+    digits = match.group("digits")
+    if _is_non_decreasing_digits(digits):
+        return
+
+    candidates = _digit_candidates_from_confidence_notes(notes)
+    if len(candidates) < 2:
+        return
+
+    replacements: list[str] = []
+    for index in _target_indexes_from_confidence_notes(notes, digits):
+        for candidate in candidates:
+            if candidate == digits[index]:
+                continue
+            replaced = f"{digits[:index]}{candidate}{digits[index + 1:]}"
+            if _is_non_decreasing_digits(replaced) and replaced not in replacements:
+                replacements.append(replaced)
+
+    if len(replacements) != 1:
+        return
+
+    old_digits = digits
+    new_digits = replacements[0]
+    _replace_group_digits_in_standardized(item, new_digits)
+    _mark_review(item, f"组选候选数字串按升序习惯优先采用{new_digits}，原识别候选为{old_digits}，仍需人工核查")
+
+
 def _maybe_fix_ascending_group_digits(digits: str) -> str | None:
-    """历史兼容占位：不再自动修正组选数字，避免猜错。"""
+    """历史兼容占位：不再无依据自动修正组选数字，避免猜错。"""
     return None
 
 
