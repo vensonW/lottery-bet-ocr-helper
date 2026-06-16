@@ -123,6 +123,7 @@ def run_batch(options: BatchOptions, progress_callback: ProgressCallback | None 
                     debug_callback=debug,
                 )
         except Exception as exc:
+            error_text = _format_error(exc)
             for image_index, image_path in bucket:
                 image_started = time.monotonic()
                 try:
@@ -131,7 +132,7 @@ def run_batch(options: BatchOptions, progress_callback: ProgressCallback | None 
                     prepared = None
                 local_results.append(make_failure_result(image_index, image_path, exc, prepared=prepared))
                 elapsed = time.monotonic() - image_started
-                mark_image_done(f"job{bucket_id} 失败：{image_path.name}，耗时 {elapsed:.1f} 秒")
+                mark_image_done(f"job{bucket_id} 失败：{image_path.name}，耗时 {elapsed:.1f} 秒，原因：{error_text}")
             return local_results
 
         for image_index, image_path in bucket:
@@ -167,7 +168,7 @@ def run_batch(options: BatchOptions, progress_callback: ProgressCallback | None 
                     prepared = None
                 local_results.append(make_failure_result(image_index, image_path, last_error, prepared=prepared))
                 elapsed = time.monotonic() - image_started
-                mark_image_done(f"job{bucket_id} 失败：{image_path.name}，耗时 {elapsed:.1f} 秒")
+                mark_image_done(f"job{bucket_id} 失败：{image_path.name}，耗时 {elapsed:.1f} 秒，原因：{_format_error(last_error)}")
         return local_results
 
     if options.reprocess_review:
@@ -207,7 +208,7 @@ def run_batch(options: BatchOptions, progress_callback: ProgressCallback | None 
                         prepared = None
                     bucket_results.append(make_failure_result(image_index, image_path, exc, prepared=prepared))
                     elapsed = time.monotonic() - image_started
-                    mark_image_done(f"job{bucket_id} 异常失败：{image_path.name}，耗时 {elapsed:.1f} 秒")
+                    mark_image_done(f"job{bucket_id} 异常失败：{image_path.name}，耗时 {elapsed:.1f} 秒，原因：{_format_error(exc)}")
             results.extend(bucket_results)
             emit(f"job{bucket_id} 完成 {len(bucket_results)} 张")
 
@@ -251,6 +252,17 @@ def _create_review_crops(results: list[ImageTaskResult], crops_dir: Path) -> Non
 def _append_review_reason(item: OcrItem, reason: str) -> None:
     if reason and reason not in item.review_reason:
         item.review_reason = f"{item.review_reason}；{reason}" if item.review_reason else reason
+
+
+def _format_error(exc: Exception | str) -> str:
+    if isinstance(exc, str):
+        return exc
+    message = str(exc).strip()
+    if message:
+        return f"{type(exc).__name__}: {message}"
+    return type(exc).__name__
+
+
 def _analyze_image_with_heartbeat(client, image_path: Path, options: BatchOptions, debug: Callable[[str], None], bucket_id: int):
     if not options.verbose:
         return client.analyze_image(image_path)

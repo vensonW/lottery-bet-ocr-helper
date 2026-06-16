@@ -35,11 +35,7 @@ if exist "%APP_NAME%.spec" del /f /q "%APP_NAME%.spec"
 echo.
 echo [3/5] Running PyInstaller...
 uv run ^
-  --with openai ^
-  --with Pillow ^
-  --with openpyxl ^
-  --with PySide6-Essentials ^
-  --with pyinstaller ^
+  --with-requirements requirements-build.txt ^
   pyinstaller ^
   --noconfirm ^
   --clean ^
@@ -49,7 +45,20 @@ uv run ^
   --add-data "skills;skills" ^
   --hidden-import api_test ^
   --hidden-import mock_openai_client ^
+  --hidden-import openai ^
+  --hidden-import httpx ^
+  --hidden-import httpcore ^
+  --hidden-import anyio ^
+  --hidden-import certifi ^
+  --hidden-import distro ^
+  --hidden-import jiter ^
+  --hidden-import sniffio ^
   --hidden-import openpyxl.cell._writer ^
+  --collect-submodules openai ^
+  --collect-submodules httpx ^
+  --collect-submodules httpcore ^
+  --collect-submodules anyio ^
+  --collect-data certifi ^
   app.py
 
 if errorlevel 1 goto BUILD_FAILED
