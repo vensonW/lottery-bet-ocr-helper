@@ -15,11 +15,21 @@ from PIL import Image as PILImage
 from models import BatchSummary, ImageTaskResult, OcrItem
 
 
-HEADERS = ["序号", "原图识别内容", "玩法判定", "标准化结果", "金额(元)", "需人工核查", "核查原因/备注", "核查截图", "图片文件名"]
+HEADERS = ["序号", "原图识别内容", "玩法判定", "标准化结果", "核查截图", "金额(元)", "需人工核查", "核查原因/备注", "图片文件名"]
 OLD_HEADERS = ["序号", "原图识别内容", "玩法判定", "标准化结果", "金额(元)", "需人工核查", "核查原因/备注", "图片文件名"]
+PREVIOUS_HEADERS = ["序号", "原图识别内容", "玩法判定", "标准化结果", "金额(元)", "需人工核查", "核查原因/备注", "核查截图", "图片文件名"]
 
-DETAIL_WIDTHS = [8, 26, 14, 32, 12, 14, 48, 112, 42]
+DETAIL_WIDTHS = [8, 26, 14, 32, 120, 12, 14, 48, 42]
 REVIEW_WIDTHS = [8, 42, 30, 72, 112, 20, 20, 20]
+PLAY_TYPE_SORT_ORDER = {
+    "胆码": 1,
+    "组三": 2,
+    "组六": 3,
+    "定位": 4,
+    "直选": 5,
+    "直选组选混合": 6,
+    "未知": 99,
+}
 
 
 def read_existing_image_files(output_file: Path) -> set[str]:
@@ -136,6 +146,7 @@ def upgrade_existing_workbook_layout(output_file: Path) -> None:
         ws_detail = wb["识别明细"]
         _ensure_detail_sheet_layout(ws_detail, output_file)
         _convert_images_to_move_and_size(ws_detail)
+        _resort_detail_sheet_rows(ws_detail, output_file=output_file)
         _apply_image_file_hyperlinks(ws_detail, {}, output_file)
         _refresh_detail_filter_and_table(ws_detail)
     if "截图核对" in wb.sheetnames:
@@ -165,6 +176,7 @@ def _append_workbook(
     else:
         existing_count = _count_detail_rows(ws_detail)
         _append_detail_rows(ws_detail, new_rows, start_sequence=existing_count + 1, image_path_map=image_path_map, output_file=output_file)
+    _resort_detail_sheet_rows(ws_detail, image_path_map=image_path_map, output_file=output_file)
     _apply_image_file_hyperlinks(ws_detail, image_path_map or {}, output_file)
     _refresh_detail_filter_and_table(ws_detail)
 
@@ -192,7 +204,19 @@ def _flatten_items(results: list[ImageTaskResult]) -> list[OcrItem]:
     rows: list[OcrItem] = []
     for result in sorted(results, key=lambda r: r.image_index):
         rows.extend(sorted(result.items, key=lambda item: item.item_index))
-    return rows
+    return _sort_items_for_excel(rows)
+
+
+def _sort_items_for_excel(rows: list[OcrItem]) -> list[OcrItem]:
+    return sorted(
+        rows,
+        key=lambda item: (
+            PLAY_TYPE_SORT_ORDER.get(item.play_type, 98),
+            item.image_file or "",
+            item.image_index,
+            item.item_index,
+        ),
+    )
 
 
 def _read_header_map(ws) -> dict[str, int]:
@@ -220,26 +244,42 @@ def _apply_review_column_widths(ws) -> None:
 
 
 def _ensure_detail_sheet_layout(ws, output_file: Path) -> None:
-    current = [ws.cell(row=1, column=i).value for i in range(1, max(len(HEADERS), len(OLD_HEADERS)) + 1)]
+    current = [ws.cell(row=1, column=i).value for i in range(1, max(len(HEADERS), len(OLD_HEADERS), len(PREVIOUS_HEADERS)) + 1)]
     if current[: len(HEADERS)] == HEADERS:
         _apply_detail_column_widths(ws)
         return
+    if current[: len(PREVIOUS_HEADERS)] == PREVIOUS_HEADERS:
+        # 兼容上一版：把“核查截图”从H列移动到“标准化结果”右侧E列。
+        ws.insert_cols(5)
+        for image in getattr(ws, "_images", []):
+            try:
+                marker = image.anchor._from
+                if marker.col == 7:  # 上一版图片在H列；插入E列后逻辑列应移动到E列。
+                    marker.col = 4
+                    marker.rowOff = pixels_to_EMU(6)
+            except Exception:
+                pass
+        ws.move_range(f"I1:I{ws.max_row}", rows=0, cols=-4, translate=False)
+        ws.delete_cols(9)
+        ws.cell(row=1, column=5, value="核查截图")
+        _apply_detail_column_widths(ws)
+        return
     if current[: len(OLD_HEADERS)] == OLD_HEADERS:
-        # 兼容旧版：在“核查原因/备注”和“图片文件名”之间插入“核查截图”列。
-        ws.insert_cols(8)
-        ws.cell(row=1, column=8, value="核查截图")
+        # 兼容旧版：在“标准化结果”和“金额(元)”之间插入“核查截图”列。
+        ws.insert_cols(5)
+        ws.cell(row=1, column=5, value="核查截图")
         try:
-            ws.cell(row=1, column=8).fill = ws.cell(row=1, column=7).fill.copy()
-            ws.cell(row=1, column=8).font = ws.cell(row=1, column=7).font.copy()
-            ws.cell(row=1, column=8).alignment = ws.cell(row=1, column=7).alignment.copy()
-            ws.cell(row=1, column=8).border = ws.cell(row=1, column=7).border.copy()
+            ws.cell(row=1, column=5).fill = ws.cell(row=1, column=4).fill.copy()
+            ws.cell(row=1, column=5).font = ws.cell(row=1, column=4).font.copy()
+            ws.cell(row=1, column=5).alignment = ws.cell(row=1, column=4).alignment.copy()
+            ws.cell(row=1, column=5).border = ws.cell(row=1, column=4).border.copy()
         except Exception:
             pass
         for image in getattr(ws, "_images", []):
             try:
                 marker = image.anchor._from
                 if marker.col == 6:  # 旧版图片贴在G列“核查原因/备注”
-                    marker.col = 7  # 新版移动到H列“核查截图”
+                    marker.col = 4  # 新版移动到E列“核查截图”
                     marker.rowOff = pixels_to_EMU(6)
             except Exception:
                 pass
@@ -281,10 +321,10 @@ def _append_detail_rows(
             item.raw_text,
             item.play_type,
             item.standardized,
+            "",
             item.amount,
             "是" if item.needs_review else "否",
             item.review_reason if item.needs_review else "",
-            "",
             item.image_file,
         ]
         ws.append(values)
@@ -293,16 +333,16 @@ def _append_detail_rows(
             cell.border = border
             cell.alignment = Alignment(vertical="center", wrap_text=True)
         ws.cell(row=row_idx, column=1).alignment = Alignment(horizontal="center", vertical="center")
-        ws.cell(row=row_idx, column=5).alignment = Alignment(horizontal="right", vertical="center")
-        ws.cell(row=row_idx, column=6).alignment = Alignment(horizontal="center", vertical="center")
+        ws.cell(row=row_idx, column=6).alignment = Alignment(horizontal="right", vertical="center")
+        ws.cell(row=row_idx, column=7).alignment = Alignment(horizontal="center", vertical="center")
         _set_image_file_hyperlink(ws.cell(row=row_idx, column=9), item.image_file, image_path_map or {}, output_file)
 
         if item.needs_review:
             for col in range(1, 10):
                 ws.cell(row=row_idx, column=col).fill = PatternFill("solid", fgColor="FFF2CC")
-            ws.cell(row=row_idx, column=6).font = Font(color="C00000", bold=True)
+            ws.cell(row=row_idx, column=7).font = Font(color="C00000", bold=True)
         if item.crop_path and item.crop_path.exists() or item.needs_review:
-            _attach_review_image(ws, item, row_idx, col_idx=8)
+            _attach_review_image(ws, item, row_idx, col_idx=5)
         else:
             ws.row_dimensions[row_idx].height = 28
         seq += 1
@@ -475,7 +515,7 @@ def _read_detail_rows(ws) -> list[OcrItem]:
         image_file = _cell_text(ws, row_idx, header_map.get("图片文件名"))
         if not image_file:
             continue
-        amount_raw = ws.cell(row=row_idx, column=header_map.get("金额(元)", 5)).value
+        amount_raw = ws.cell(row=row_idx, column=header_map.get("金额(元)", 6)).value
         try:
             amount = int(round(float(amount_raw or 0)))
         except (TypeError, ValueError):
@@ -494,6 +534,100 @@ def _read_detail_rows(ws) -> list[OcrItem]:
             )
         )
     return rows
+
+
+def _resort_detail_sheet_rows(ws, image_path_map: dict[str, Path] | None = None, output_file: Path | None = None) -> None:
+    rows = _sort_items_for_excel(_read_detail_rows(ws))
+    images_by_old_row = _collect_detail_row_images(ws)
+
+    if ws.max_row > 1:
+        ws.delete_rows(2, ws.max_row - 1)
+    try:
+        ws._images = []
+    except Exception:
+        pass
+
+    thin = Side(style="thin", color="D9E2F3")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    for idx, item in enumerate(rows, start=1):
+        row_idx = idx + 1
+        values = [
+            idx,
+            item.raw_text,
+            item.play_type,
+            item.standardized,
+            "",
+            item.amount,
+            "是" if item.needs_review else "否",
+            item.review_reason if item.needs_review else "",
+            item.image_file,
+        ]
+        ws.append(values)
+        for col in range(1, 10):
+            cell = ws.cell(row=row_idx, column=col)
+            cell.border = border
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+        ws.cell(row=row_idx, column=1).alignment = Alignment(horizontal="center", vertical="center")
+        ws.cell(row=row_idx, column=6).alignment = Alignment(horizontal="right", vertical="center")
+        ws.cell(row=row_idx, column=7).alignment = Alignment(horizontal="center", vertical="center")
+        _set_image_file_hyperlink(ws.cell(row=row_idx, column=9), item.image_file, image_path_map or {}, output_file)
+
+        if item.needs_review:
+            for col in range(1, 10):
+                ws.cell(row=row_idx, column=col).fill = PatternFill("solid", fgColor="FFF2CC")
+            ws.cell(row=row_idx, column=7).font = Font(color="C00000", bold=True)
+
+        image_key = _detail_row_identity(item)
+        old_image = images_by_old_row.get(image_key)
+        if old_image:
+            _restore_row_image(ws, old_image, row_idx, col_idx=5)
+        elif item.crop_path and item.crop_path.exists() or item.needs_review:
+            _attach_review_image(ws, item, row_idx, col_idx=5)
+        else:
+            ws.row_dimensions[row_idx].height = 28
+
+
+def _collect_detail_row_images(ws) -> dict[tuple, object]:
+    result: dict[tuple, object] = {}
+    for image in getattr(ws, "_images", []):
+        try:
+            row_idx = image.anchor._from.row + 1
+            key = (
+                _cell_text(ws, row_idx, 2),
+                _cell_text(ws, row_idx, 3),
+                _cell_text(ws, row_idx, 4),
+                ws.cell(row=row_idx, column=6).value,
+                _cell_text(ws, row_idx, 7),
+                _cell_text(ws, row_idx, 8),
+                _cell_text(ws, row_idx, 9),
+            )
+            result[key] = image
+        except Exception:
+            continue
+    return result
+
+
+def _detail_row_identity(item: OcrItem) -> tuple:
+    return (
+        item.raw_text,
+        item.play_type,
+        item.standardized,
+        item.amount,
+        "是" if item.needs_review else "否",
+        item.review_reason if item.needs_review else "",
+        item.image_file,
+    )
+
+
+def _restore_row_image(ws, old_image, row_idx: int, col_idx: int) -> None:
+    try:
+        image_width, image_height = _image_display_size_px(old_image)
+        old_image.anchor = _make_two_cell_anchor(row_idx, col_idx, image_width, image_height)
+        ws.add_image(old_image)
+        ws.row_dimensions[row_idx].height = max(170, (image_height + 28) * 0.75)
+    except Exception:
+        pass
 
 
 def _cell_text(ws, row: int, col: int | None) -> str:
@@ -636,10 +770,10 @@ def _write_detail_sheet(
             item.raw_text,
             item.play_type,
             item.standardized,
+            "",
             item.amount,
             "是" if item.needs_review else "否",
             item.review_reason if item.needs_review else "",
-            "",
             item.image_file,
         ]
         ws.append(values)
@@ -648,16 +782,16 @@ def _write_detail_sheet(
             cell.border = border
             cell.alignment = Alignment(vertical="center", wrap_text=True)
         ws.cell(row=row_idx, column=1).alignment = Alignment(horizontal="center", vertical="center")
-        ws.cell(row=row_idx, column=5).alignment = Alignment(horizontal="right", vertical="center")
-        ws.cell(row=row_idx, column=6).alignment = Alignment(horizontal="center", vertical="center")
+        ws.cell(row=row_idx, column=6).alignment = Alignment(horizontal="right", vertical="center")
+        ws.cell(row=row_idx, column=7).alignment = Alignment(horizontal="center", vertical="center")
         _set_image_file_hyperlink(ws.cell(row=row_idx, column=9), item.image_file, image_path_map or {}, output_file)
 
         if item.needs_review:
             for col in range(1, 10):
                 ws.cell(row=row_idx, column=col).fill = PatternFill("solid", fgColor="FFF2CC")
-            ws.cell(row=row_idx, column=6).font = Font(color="C00000", bold=True)
+            ws.cell(row=row_idx, column=7).font = Font(color="C00000", bold=True)
         if item.crop_path and item.crop_path.exists() or item.needs_review:
-            _attach_review_image(ws, item, row_idx, col_idx=8)
+            _attach_review_image(ws, item, row_idx, col_idx=5)
         else:
             ws.row_dimensions[row_idx].height = 28
 

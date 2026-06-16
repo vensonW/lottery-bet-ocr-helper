@@ -8,8 +8,8 @@ from models import CropHint, ImageTaskResult, OcrItem, PreparedImage
 
 
 POSITION_SYMBOL_RE = re.compile(r"[xX×＊*✕✖╳]")
-GROUP_STANDARDIZED_RE = re.compile(r"福(?P<digits>\d{3,})(?P<group_type>组三|组六)")
-SAME_DIGIT_STANDARDIZED_RE = re.compile(r"福(?:胆)?(?P<digits>(?P<digit>\d)(?P=digit){2,})(?:组三|组六|直)?各(?P<amount>\d+)元")
+GROUP_STANDARDIZED_RE = re.compile(r"福(?P<digits>\d{3,})(?P<group_type>组三(?:3码)?|组六)")
+SAME_DIGIT_STANDARDIZED_RE = re.compile(r"福(?:胆)?(?P<digits>(?P<digit>\d)(?P=digit){2,})(?:组三(?:3码)?|组六|直)?各(?P<amount>\d+)元")
 DAN_STANDARDIZED_RE = re.compile(r"福胆(?P<digits>\d+)各\d+元")
 RAW_NUMBER_OR_POSITION_RE = re.compile(r"[0-9xX×＊*✕✖╳]+")
 POSITION_STANDARDIZED_RE = re.compile(r"福(?P<body>[0-9*\-—–－\s]+)定各(?P<amount>\d+)元")
@@ -253,7 +253,8 @@ def _fill_standardized_candidate(item: OcrItem) -> None:
     if item.play_type == "胆码":
         item.standardized = f"福胆{digits}各{item.amount}元"
     elif item.play_type in {"组三", "组六"}:
-        item.standardized = f"福{digits}{item.play_type}各{item.amount}元"
+        suffix = "3码" if item.play_type == "组三" and len(digits) == 3 else ""
+        item.standardized = f"福{digits}{item.play_type}{suffix}各{item.amount}元"
     elif item.play_type == "直选":
         item.standardized = f"福{digits}直各{item.amount}元"
 
@@ -410,6 +411,17 @@ def _apply_group_ascending_checks(item: OcrItem) -> None:
             _mark_review(item, "组选数字串不符合从小到大书写规律，需核查是否识别错误")
 
 
+def _apply_group_three_code_suffix(item: OcrItem) -> None:
+    if item.play_type != "组三":
+        return
+    match = GROUP_STANDARDIZED_RE.search(item.standardized)
+    if not match:
+        return
+    digits = match.group("digits")
+    if len(digits) == 3 and "3码" not in item.standardized:
+        item.standardized = item.standardized.replace("组三", "组三3码", 1)
+
+
 def _normalize_position_standardized(item: OcrItem) -> None:
     if item.play_type != "定位" and "定各" not in item.standardized:
         return
@@ -457,6 +469,9 @@ def _apply_safety_checks(item: OcrItem) -> None:
     # 组选数字通常按从小到大书写。典型场景：23479 被误识别成 23419。
     # 程序不再自动修正数字，只标记人工核查，避免猜错。直选不做该检查。
     _apply_group_ascending_checks(item)
+
+    # 组三若是 3 位数，统一标成“3码”。
+    _apply_group_three_code_suffix(item)
 
     # 定位防盲猜：标准化中出现*，但原始识别内容没有明确定位符号时，必须人工核查。
     if "*" in item.standardized:

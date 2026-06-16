@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import sys
 import traceback
+import html
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QThread, Signal, Slot, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -19,7 +21,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QSpinBox,
     QCheckBox,
-    QTextEdit,
+    QTextBrowser,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -146,8 +148,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.progress)
 
         layout.addWidget(QLabel("运行日志："))
-        self.log = QTextEdit()
+        self.log = QTextBrowser()
         self.log.setReadOnly(True)
+        self.log.setOpenLinks(False)
+        self.log.anchorClicked.connect(self._open_log_link)
         layout.addWidget(self.log, stretch=1)
 
     def _load_config_to_ui(self) -> None:
@@ -260,13 +264,14 @@ class MainWindow(QMainWindow):
     def on_progress(self, done: int, total: int, message: str) -> None:
         if total:
             self.progress.setValue(int(done * 100 / total))
-        self._log(message)
+        prefix = f"[{done}/{total}] " if total else ""
+        self._log(f"{prefix}{message}")
 
     @Slot(str)
     def on_finished(self, output_file: str) -> None:
         self.start_btn.setEnabled(True)
         self.progress.setValue(100)
-        self._log(f"完成：{output_file}")
+        self._log_with_link("[完成] 完成：", output_file)
         QMessageBox.information(self, "完成", f"Excel已生成：\n{output_file}")
 
     @Slot(str)
@@ -276,7 +281,18 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "处理失败", error)
 
     def _log(self, message: str) -> None:
-        self.log.append(message)
+        self.log.append(html.escape(message).replace("\n", "<br>"))
+
+    def _log_with_link(self, prefix: str, path_text: str) -> None:
+        url = QUrl.fromLocalFile(path_text).toString()
+        prefix_html = html.escape(prefix)
+        path_html = html.escape(path_text)
+        url_html = html.escape(url, quote=True)
+        self.log.append(f'{prefix_html}<a href="{url_html}">{path_html}</a>')
+
+    @Slot(QUrl)
+    def _open_log_link(self, url: QUrl) -> None:
+        QDesktopServices.openUrl(url)
 
 
 def main(root_dir: Path, resource_dir: Path | None = None) -> int:

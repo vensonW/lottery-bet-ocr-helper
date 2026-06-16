@@ -14,6 +14,7 @@ class PreparedImage:
     original_height: int
     sent_width: int
     sent_height: int
+    rotation_degrees: int = 0
 
     @property
     def scale_x(self) -> float:

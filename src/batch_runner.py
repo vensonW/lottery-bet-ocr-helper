@@ -146,8 +146,6 @@ def run_batch(options: BatchOptions, progress_callback: ProgressCallback | None 
                     debug(f"job{bucket_id} 开始调用 AI：{image_path.name}，第 {attempt + 1} 次")
                     data, prepared = _analyze_image_with_heartbeat(client, image_path, options, debug, bucket_id)
                     result = validate_ai_result(data, image_index, image_path, prepared)
-                    if not options.mock:
-                        _run_second_pass_review(client, result, crops_dir, debug)
                     debug(
                         f"job{bucket_id} 解析完成：{image_path.name}，"
                         f"返回 {len(result.items)} 行，需核查 {sum(1 for item in result.items if item.needs_review)} 行"
@@ -253,70 +251,6 @@ def _create_review_crops(results: list[ImageTaskResult], crops_dir: Path) -> Non
 def _append_review_reason(item: OcrItem, reason: str) -> None:
     if reason and reason not in item.review_reason:
         item.review_reason = f"{item.review_reason}；{reason}" if item.review_reason else reason
-
-
-def _run_second_pass_review(client, result: ImageTaskResult, crops_dir: Path, debug: Callable[[str], None]) -> None:
-    if result.prepared is None:
-        return
-
-    for item in result.items:
-        if not item.needs_review:
-            continue
-        if item.crop_hint is None or not item.crop_hint.is_usable():
-            continue
-
-        crop_name = f"img{result.image_index + 1:04d}_row{item.item_index + 1:03d}_review2x.png"
-        crop_path = crops_dir / crop_name
-        try:
-            crop_path, used_full = save_review_crop(
-                result.image_path,
-                result.prepared,
-                item.crop_hint,
-                crop_path,
-                max_width=1600,
-                max_height=900,
-                upscale_factor=2.5,
-            )
-            if used_full:
-                continue
-
-            data, prepared = client.analyze_review_crop(crop_path, result.image_file, item.raw_text)
-            review_result = validate_ai_result(data, result.image_index, result.image_path, prepared)
-            if not review_result.items:
-                _append_review_reason(item, "二次放大识别失败，保留首次结果：AI未返回复核行")
-                continue
-
-            reviewed = review_result.items[0]
-            reviewed.image_index = item.image_index
-            reviewed.item_index = item.item_index
-            reviewed.image_file = item.image_file
-            reviewed.crop_hint = item.crop_hint
-            reviewed.crop_path = crop_path
-
-            if not reviewed.needs_review:
-                item.raw_text = reviewed.raw_text
-                item.play_type = reviewed.play_type
-                item.standardized = reviewed.standardized
-                item.amount = reviewed.amount
-                item.needs_review = False
-                item.review_reason = ""
-                item.crop_path = crop_path
-                item.crop_note = "二次放大识别已确认"
-                debug(f"二次放大复核通过：{result.image_file} row{item.item_index + 1}")
-            else:
-                item.raw_text = reviewed.raw_text or item.raw_text
-                item.play_type = reviewed.play_type or item.play_type
-                item.standardized = reviewed.standardized or item.standardized
-                item.amount = reviewed.amount or item.amount
-                item.needs_review = True
-                item.crop_path = crop_path
-                reason = reviewed.review_reason or "二次放大识别仍无法达到90%以上把握"
-                _append_review_reason(item, f"二次放大识别仍需核查：{reason}")
-                debug(f"二次放大复核仍需核查：{result.image_file} row{item.item_index + 1}")
-        except Exception as exc:
-            _append_review_reason(item, f"二次放大识别失败，保留首次结果：{exc}")
-
-
 def _analyze_image_with_heartbeat(client, image_path: Path, options: BatchOptions, debug: Callable[[str], None], bucket_id: int):
     if not options.verbose:
         return client.analyze_image(image_path)
