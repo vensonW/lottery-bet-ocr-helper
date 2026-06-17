@@ -7,7 +7,7 @@ set UV_CACHE_DIR=%CD%\.uv_cache
 set UV_LOCK_TIMEOUT=1800
 if "%UV_DEFAULT_INDEX%"=="" set UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 
-where uv >nul 2>nul
+uv --version >nul 2>nul
 if errorlevel 1 goto BUILD_WITH_PIP
 
 echo Building desktop exe: %APP_NAME%

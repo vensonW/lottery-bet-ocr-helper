@@ -100,7 +100,10 @@ class MainWindow(QMainWindow):
         self.timeout_spin.setRange(30, 1800)
         self.timeout_spin.setSingleStep(30)
         self.mock_check = QCheckBox("离线演示模式（不调用OpenAI）")
+        self.overwrite_check = QCheckBox("覆盖生成（删除旧结果，全部重新识别）")
         self.reprocess_review_check = QCheckBox("只重新识别已有Excel中需人工核查的图片")
+        self.overwrite_check.toggled.connect(self._sync_generation_mode_checks)
+        self.reprocess_review_check.toggled.connect(self._sync_generation_mode_checks)
         self.verbose_check = QCheckBox("打印详细日志")
 
         input_row = QHBoxLayout()
@@ -128,6 +131,7 @@ class MainWindow(QMainWindow):
         form.addRow("失败重试次数：", self.retry_spin)
         form.addRow("AI超时秒数：", self.timeout_spin)
         form.addRow("", self.mock_check)
+        form.addRow("", self.overwrite_check)
         form.addRow("", self.reprocess_review_check)
         form.addRow("", self.verbose_check)
         layout.addLayout(form)
@@ -182,6 +186,18 @@ class MainWindow(QMainWindow):
             # 兼容 config.ini 里已经保存的自定义模型名，但界面仍不允许手动输入。
             self.model_combo.addItem(model)
         self.model_combo.setCurrentText(model)
+
+    @Slot()
+    def _sync_generation_mode_checks(self) -> None:
+        sender = self.sender()
+        if sender is self.overwrite_check and self.overwrite_check.isChecked():
+            self.reprocess_review_check.blockSignals(True)
+            self.reprocess_review_check.setChecked(False)
+            self.reprocess_review_check.blockSignals(False)
+        elif sender is self.reprocess_review_check and self.reprocess_review_check.isChecked():
+            self.overwrite_check.blockSignals(True)
+            self.overwrite_check.setChecked(False)
+            self.overwrite_check.blockSignals(False)
 
     @Slot()
     def toggle_api_key_visibility(self) -> None:
@@ -242,6 +258,7 @@ class MainWindow(QMainWindow):
             verbose=self.verbose_check.isChecked(),
             ai_timeout_seconds=self.config.ai_timeout_seconds,
             reprocess_review=self.reprocess_review_check.isChecked(),
+            overwrite_output=self.overwrite_check.isChecked(),
         )
         self.start_btn.setEnabled(False)
         self.progress.setValue(0)

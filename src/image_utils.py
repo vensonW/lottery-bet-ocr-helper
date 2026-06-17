@@ -158,7 +158,7 @@ def rotate_image_file_in_place(image_path: Path, rotation_degrees: int, jpeg_qua
 def clamp_crop_to_original(
     hint: CropHint | None,
     prepared: PreparedImage,
-    padding_ratio: float = 0.65,
+    padding_ratio: float = 0.35,
     image_width: int | None = None,
     image_height: int | None = None,
 ) -> tuple[int, int, int, int] | None:
@@ -171,18 +171,16 @@ def clamp_crop_to_original(
     h = int(round(hint.h * prepared.scale_y))
     # AI 给出的局部框有时偏紧：横向多留，避免金额或玩法字被裁掉；
     # 纵向也多留一些，避免截图只剩半行；但保留上限，尽量不截到上下多组数字。
-    pad_x = max(160, int(w * max(padding_ratio, 0.65)))
-    # AI sometimes anchors the crop above the actual handwriting row. Keep more
-    # room below the hint so the target row is still visible in Excel.
-    pad_top = max(46, min(110, int(h * 0.65)))
-    pad_bottom = max(260, min(520, int(h * 2.6)))
-    max_total_height = max(360, min(820, int(h * 5.4)))
+    pad_x = max(110, int(w * max(padding_ratio, 0.45)))
+    pad_top = max(72, min(130, int(h * 0.95)))
+    pad_bottom = max(42, min(95, int(h * 0.55)))
+    max_total_height = max(240, min(420, int(h * 3.4)))
     if h + pad_top + pad_bottom > max_total_height:
         overflow = h + pad_top + pad_bottom - max_total_height
-        reduce_top = min(max(0, pad_top - 24), overflow // 3)
-        pad_top -= reduce_top
-        overflow -= reduce_top
-        pad_bottom = max(140, pad_bottom - overflow)
+        reduce_bottom = min(max(0, pad_bottom - 32), overflow)
+        pad_bottom -= reduce_bottom
+        overflow -= reduce_bottom
+        pad_top = max(56, pad_top - overflow)
     left = max(0, x - pad_x)
     top = max(0, y - pad_top)
     image_width = image_width or prepared.original_width
@@ -201,7 +199,7 @@ def save_review_crop(
     hint: CropHint | None,
     output_path: Path,
     max_width: int = 920,
-    max_height: int = 700,
+    max_height: int = 560,
     upscale_factor: float = 1.0,
 ) -> tuple[Path, bool]:
     """保存核查截图。返回：(截图路径, 是否使用整图兜底)。"""

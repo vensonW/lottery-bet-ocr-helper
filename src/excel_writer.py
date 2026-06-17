@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ctypes
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -30,6 +32,54 @@ PLAY_TYPE_SORT_ORDER = {
     "直选组选混合": 6,
     "未知": 99,
 }
+
+
+class WorkbookDeleteGuard:
+    """Keep an existing workbook from being deleted/renamed while a batch runs."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._handle = None
+
+    def lock(self) -> "WorkbookDeleteGuard":
+        if sys.platform != "win32" or not self.path.exists():
+            return self
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.restype = ctypes.c_void_p
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        generic_read = 0x80000000
+        file_share_read = 0x00000001
+        file_share_write = 0x00000002
+        open_existing = 3
+        file_attribute_normal = 0x00000080
+
+        handle = kernel32.CreateFileW(
+            str(self.path.resolve()),
+            generic_read,
+            file_share_read | file_share_write,
+            None,
+            open_existing,
+            file_attribute_normal,
+            None,
+        )
+        if handle == ctypes.c_void_p(-1).value:
+            error = ctypes.get_last_error()
+            raise PermissionError(f"无法锁定Excel防删除，请确认文件未被占用：{self.path}；系统错误：{error}")
+        self._handle = handle
+        return self
+
+    def close(self) -> None:
+        if self._handle is not None:
+            ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(self._handle)
+            self._handle = None
+
+    def __del__(self) -> None:
+        self.close()
+
+
+def protect_workbook_from_delete(output_file: Path) -> WorkbookDeleteGuard:
+    return WorkbookDeleteGuard(output_file).lock()
 
 
 def read_existing_image_files(output_file: Path) -> set[str]:
@@ -872,7 +922,7 @@ def _write_summary_sheet(ws, results: list[ImageTaskResult], rows: list[OcrItem]
     ws["A13"].fill = PatternFill("solid", fgColor="F4B183")
     ws["A13"].font = Font(bold=True)
     notes = [
-        "1. 红色圈注、红色合计、红色批注不计入投注内容。",
+        "1. 红色框线、红色圈注、红色合计、红色批注不计入投注内容。",
         "2. 正常行的“核查原因/备注”为空。",
         "3. 明细表“核查截图”列会尽量为每一行贴局部截图；需人工核查行会额外写明原因。",
         "4. 定位玩法禁止盲目把不确定数字转为*，触发风险时自动标记人工核查。",

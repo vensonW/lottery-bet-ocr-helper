@@ -41,6 +41,7 @@ def run_cli(argv: list[str] | None = None) -> int:
     parser.add_argument("--mock", action="store_true", help="离线演示模式，不调用OpenAI")
     parser.add_argument("--verbose", action="store_true", help="打印详细日志：AI调用参数摘要、重试、原始返回JSON")
     parser.add_argument("--reprocess-review", action="store_true", help="只重新识别Excel中已标记需人工核查的图片，并替换这些图片的旧记录")
+    parser.add_argument("--overwrite", action="store_true", help="覆盖生成：删除旧Excel和截图，全部图片重新识别")
     parser.add_argument("--test-api", action="store_true", help="只测试 OpenAI 接口是否连通，不处理图片")
     args = parser.parse_args(argv)
 
@@ -100,6 +101,8 @@ def run_cli(argv: list[str] | None = None) -> int:
 
     if not args.input:
         raise SystemExit("缺少图片文件夹：请使用 --input 指定，或仅使用 --test-api 测试接口。")
+    if args.overwrite and args.reprocess_review:
+        print("已同时指定 --overwrite 和 --reprocess-review；本次按覆盖生成处理。")
 
     from batch_runner import BatchOptions, run_batch
     input_dir = Path(args.input)
@@ -125,6 +128,7 @@ def run_cli(argv: list[str] | None = None) -> int:
         verbose=args.verbose,
         ai_timeout_seconds=int(config.ai_timeout_seconds or 120),
         reprocess_review=args.reprocess_review,
+        overwrite_output=args.overwrite,
     )
 
     def on_progress(done: int, total: int, message: str) -> None:

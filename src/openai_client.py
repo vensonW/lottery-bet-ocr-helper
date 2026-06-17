@@ -90,9 +90,14 @@ class LotteryOcrClient:
             "请严格按 SKILL.md 和 JSON Schema 返回结果。不要输出 Markdown 或解释文字。"
         )
         prompt += (
-            "\nCrop hint requirement: every crop_hint MUST include the complete visible betting text for that row: "
-            "all digits, play-type words, amount, separators, and a small margin on all sides. "
-            "Never crop through handwriting. If unsure, make the crop_hint larger rather than tighter."
+            "\nCrop hint requirement: for every crop_hint, first locate the bounding box of the actual dark handwritten "
+            "betting text in the analyzed image. Use the leftmost, rightmost, topmost, and bottommost pixels of the "
+            "current row's dark betting handwriting as the basis for x, y, w, h. Ignore red boxes/rectangles, red "
+            "circles, and other red annotations; they are human marks, not betting content. Include all digits, "
+            "play-type words, amount, separators/dashes, and a small margin on all sides. Do not use red boxes, "
+            "red circles, blank paper, names, titles, or neighboring rows as the bounding box boundary. Never crop "
+            "through handwriting. If unsure, "
+            "make the crop_hint larger rather than tighter."
         )
         instructions = (
             "你必须严格执行下面的 SKILL.md 规则，并输出符合 JSON Schema 的结构化数据。\n\n"

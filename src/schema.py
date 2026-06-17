@@ -51,10 +51,22 @@ LOTTERY_OCR_SCHEMA = {
                     "crop_hint": {
                         "type": ["object", "null"],
                         "properties": {
-                            "x": {"type": "integer"},
-                            "y": {"type": "integer"},
-                            "w": {"type": "integer"},
-                            "h": {"type": "integer"},
+                            "x": {
+                                "type": "integer",
+                                "description": "Left edge of the bounding box for this row's dark handwritten betting text, ignoring red boxes/rectangles/circles.",
+                            },
+                            "y": {
+                                "type": "integer",
+                                "description": "Top edge of the bounding box for this row's dark handwritten betting text, ignoring red boxes/rectangles/circles.",
+                            },
+                            "w": {
+                                "type": "integer",
+                                "description": "Width from the leftmost to rightmost pixels of this row's dark handwritten betting text, ignoring red boxes/rectangles/circles.",
+                            },
+                            "h": {
+                                "type": "integer",
+                                "description": "Height from the topmost to bottommost pixels of this row's dark handwritten betting text, ignoring red boxes/rectangles/circles.",
+                            },
                         },
                         "required": ["x", "y", "w", "h"],
                         "additionalProperties": False,

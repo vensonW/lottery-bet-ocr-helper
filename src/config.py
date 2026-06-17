@@ -9,13 +9,14 @@ from pathlib import Path
 
 INI_CONFIG_FILE = "config.ini"
 LEGACY_JSON_CONFIG_FILE = "config.json"
+DEFAULT_BASE_URL = "https://api.codexzh.com/v1"
 
 
 @dataclass
 class AppConfig:
     api_key: str = ""
     model: str = "gpt-5.5"
-    base_url: str = ""
+    base_url: str = DEFAULT_BASE_URL
     proxy: str = ""
     default_job_count: int = 3
     default_output_dir: str = "outputs"
@@ -58,7 +59,7 @@ def _load_ini_config(path: Path, config: AppConfig) -> AppConfig:
     if parser.has_section("openai"):
         config.api_key = parser.get("openai", "api_key", fallback=config.api_key).strip()
         config.model = parser.get("openai", "model", fallback=config.model).strip() or config.model
-        config.base_url = parser.get("openai", "base_url", fallback=config.base_url).strip()
+        config.base_url = parser.get("openai", "base_url", fallback=config.base_url).strip() or DEFAULT_BASE_URL
         config.proxy = parser.get("openai", "proxy", fallback=config.proxy).strip()
 
     if parser.has_section("app"):
@@ -73,7 +74,7 @@ def _load_ini_config(path: Path, config: AppConfig) -> AppConfig:
     if defaults:
         config.api_key = defaults.get("api_key", config.api_key).strip()
         config.model = defaults.get("model", config.model).strip() or config.model
-        config.base_url = defaults.get("base_url", config.base_url).strip()
+        config.base_url = defaults.get("base_url", config.base_url).strip() or DEFAULT_BASE_URL
         config.proxy = defaults.get("proxy", config.proxy).strip()
 
     return config

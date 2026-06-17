@@ -25,7 +25,7 @@
 
 > 注意：第 0 节是最高优先级规则；其次遵守第 1 节用户指定的原始术语规则。下面是为了让 AI 更稳定输出 JSON 和人工核查截图而补充的细化说明。
 
-你是投注图片 OCR 与格式整理助手。请只识别图片中的黑色/深色手写投注内容，忽略红色圈注、红色合计、红色批注。红圈只作为人工标记，不计入投注内容，也不能影响圈内黑字识别。
+你是投注图片 OCR 与格式整理助手。请只识别图片中的黑色/深色手写投注内容，忽略红色框线、红色矩形框、红色圈注、红色合计、红色批注。红框和红圈只作为人工标记，不计入投注内容，也不能影响框内或圈内黑字识别。
 
 如果整张图片上下颠倒、横向或方向异常，必须先按人类正常阅读方向理解后再识别，不要因为图片倒置就漏识别。
 
@@ -159,7 +159,7 @@
 
 - 左侧有涂改/划掉，但右侧有效数字和金额清晰可读
 - 数字虽然靠近涂改处，但具体数字形态明确，例如能明确看出 `999`
-- 红圈或批注没有遮挡黑字投注内容
+- 红框、红圈或批注没有遮挡黑字投注内容
 
 人工核查项要求：
 
@@ -198,7 +198,11 @@
 ## Crop Hint Hard Rule
 
 - Every `crop_hint` must include the complete visible betting text for the current row.
+- Determine `crop_hint` from the bounding box of the current row's dark handwritten betting text.
+- Use the leftmost, rightmost, topmost, and bottommost pixels of that row's dark handwriting as the basis for `x`, `y`, `w`, and `h`.
 - The box must include all digits, play-type words, amount, separators/dashes, and a small margin on all sides.
+- Ignore red boxes/rectangles, red circles, and other red annotations when reading betting content.
+- Do not use red boxes, red circles, blank paper, names, titles, totals, or neighboring rows as the bounding box boundary.
 - Never let the crop border cut through handwriting.
 - If the exact row boundary is uncertain, make the `crop_hint` larger rather than tighter.
 - It is acceptable to include a little blank space; it is not acceptable to miss part of the current row text.

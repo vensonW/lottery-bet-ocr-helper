@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import shutil
 from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 from dataclasses import dataclass
 from threading import Lock
@@ -9,6 +10,7 @@ from typing import Callable
 
 from excel_writer import (
     ensure_workbook_writable,
+    protect_workbook_from_delete,
     read_existing_image_files,
     read_review_image_files,
     upgrade_existing_workbook_layout,
@@ -40,6 +42,7 @@ class BatchOptions:
     verbose: bool = False
     ai_timeout_seconds: int = 120
     reprocess_review: bool = False
+    overwrite_output: bool = False
 
 
 def run_batch(options: BatchOptions, progress_callback: ProgressCallback | None = None) -> Path:
@@ -52,12 +55,24 @@ def run_batch(options: BatchOptions, progress_callback: ProgressCallback | None 
     crops_dir = run_output_dir / "_row_crops"
     output_file = run_output_dir / f"{output_stem}.xlsx"
     run_output_dir.mkdir(parents=True, exist_ok=True)
+    if options.overwrite_output:
+        if output_file.exists():
+            ensure_workbook_writable(output_file)
+            output_file.unlink()
+        if crops_dir.exists():
+            shutil.rmtree(crops_dir)
+        if progress_callback:
+            progress_callback(0, 0, f"启用覆盖生成：已删除旧结果，将重新识别全部图片：{output_file}")
     ensure_workbook_writable(output_file)
+    workbook_delete_guard = protect_workbook_from_delete(output_file)
     upgrade_existing_workbook_layout(output_file)
 
     existing_image_files = read_existing_image_files(output_file)
-    review_image_files = read_review_image_files(output_file) if options.reprocess_review else set()
-    if options.reprocess_review:
+    review_image_files = read_review_image_files(output_file) if options.reprocess_review and not options.overwrite_output else set()
+    if options.overwrite_output:
+        image_files_with_index = list(enumerate(image_files))
+        skipped_count = 0
+    elif options.reprocess_review:
         image_files_with_index = [
             (idx, image_path)
             for idx, image_path in enumerate(image_files)
@@ -136,7 +151,7 @@ def run_batch(options: BatchOptions, progress_callback: ProgressCallback | None 
             return local_results
 
         for image_index, image_path in bucket:
-            if not options.reprocess_review and image_path.name in read_existing_image_files(output_file):
+            if not options.overwrite_output and not options.reprocess_review and image_path.name in read_existing_image_files(output_file):
                 mark_image_done(f"job{bucket_id} 跳过：{image_path.name}，Excel已存在记录，未发送AI")
                 continue
             image_started = time.monotonic()
@@ -171,18 +186,25 @@ def run_batch(options: BatchOptions, progress_callback: ProgressCallback | None 
                 mark_image_done(f"job{bucket_id} 失败：{image_path.name}，耗时 {elapsed:.1f} 秒，原因：{_format_error(last_error)}")
         return local_results
 
-    if options.reprocess_review:
+    if options.overwrite_output:
+        emit(f"启用覆盖生成：发现 {len(image_files)} 张图片，旧结果已删除，本次全部重新识别")
+    elif options.reprocess_review:
         emit(f"启用 --reprocess-review：Excel中需人工核查图片 {len(review_image_files)} 张，本次可在文件夹中找到 {total} 张")
     elif skipped_count:
         emit(f"发现 {len(image_files)} 张图片，Excel已有记录 {skipped_count} 张，跳过不再发送AI")
     if total == 0:
-        if options.reprocess_review:
+        if options.overwrite_output:
+            emit(f"没有图片需要识别，直接使用输出文件：{output_file}")
+        elif options.reprocess_review:
             emit(f"没有找到需要重新识别的人工核查图片，直接使用已有Excel：{output_file}")
         else:
             emit(f"没有新增图片需要识别，直接使用已有Excel：{output_file}")
         return output_file
 
-    if options.reprocess_review:
+    if options.overwrite_output:
+        emit(f"发现 {len(image_files)} 张图片，覆盖生成待处理 {total} 张，启动 {job_count} 个job")
+        emit(f"覆盖生成结果将写入：{output_file}")
+    elif options.reprocess_review:
         emit(f"发现 {len(image_files)} 张图片，待重新处理 {total} 张，启动 {job_count} 个job")
         emit(f"重新识别结果将替换这些图片的旧记录：{output_file}")
     else:
@@ -216,10 +238,11 @@ def run_batch(options: BatchOptions, progress_callback: ProgressCallback | None 
     debug("开始生成识别行截图")
     _create_review_crops(results, crops_dir)
     debug("开始写入 Excel")
-    replace_image_files = {result.image_file for result in results} if options.reprocess_review else None
+    replace_image_files = {result.image_file for result in results} if options.reprocess_review and not options.overwrite_output else None
     write_workbook(results, output_file, replace_image_files=replace_image_files)
     if progress_callback:
         progress_callback(total, total, f"Excel已更新：{output_file}")
+    workbook_delete_guard.close()
     return output_file
 
 
