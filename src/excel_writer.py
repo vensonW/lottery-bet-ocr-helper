@@ -580,9 +580,11 @@ def _resort_detail_sheet_rows(ws, image_path_map: dict[str, Path] | None = None,
 
         image_key = _detail_row_identity(item)
         old_image = images_by_old_row.get(image_key)
-        if old_image:
+        if item.crop_path and item.crop_path.exists():
+            _attach_review_image(ws, item, row_idx, col_idx=5)
+        elif old_image:
             _restore_row_image(ws, old_image, row_idx, col_idx=5)
-        elif item.crop_path and item.crop_path.exists() or item.needs_review:
+        elif item.needs_review:
             _attach_review_image(ws, item, row_idx, col_idx=5)
         else:
             ws.row_dimensions[row_idx].height = 28

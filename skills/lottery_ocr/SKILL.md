@@ -194,3 +194,11 @@
 - `digit_confidence_notes`：数字识别置信度备注；任一数字最高候选低于90%时填写候选数字和概率，例如 `末位数字：9约70%，8约30%`；否则为空字符串
 - `min_digit_confidence`：本行投注数字最低识别把握百分比，整数 `0-100`；任一数字或数字个数低于90%时必须小于90，正常清晰时填90-100
 - `crop_hint`：该投注行局部截图坐标；正常项也要尽量填写；坐标只覆盖当前投注行，避免包含上下相邻行；确实无法定位时才可为 null
+
+## Crop Hint Hard Rule
+
+- Every `crop_hint` must include the complete visible betting text for the current row.
+- The box must include all digits, play-type words, amount, separators/dashes, and a small margin on all sides.
+- Never let the crop border cut through handwriting.
+- If the exact row boundary is uncertain, make the `crop_hint` larger rather than tighter.
+- It is acceptable to include a little blank space; it is not acceptable to miss part of the current row text.

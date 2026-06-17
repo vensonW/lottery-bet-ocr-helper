@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from image_utils import prepare_image_for_ai
+from image_utils import prepare_image_for_ai, rotate_image_file_in_place
 from models import PreparedImage
 
 
@@ -20,6 +20,9 @@ class MockLotteryOcrClient:
 
     def analyze_image(self, image_path: Path) -> tuple[dict[str, Any], PreparedImage]:
         prepared = prepare_image_for_ai(image_path, max_side=self.max_image_side)
+        if prepared.rotation_degrees:
+            rotate_image_file_in_place(image_path, prepared.rotation_degrees)
+            prepared = prepare_image_for_ai(image_path, max_side=self.max_image_side, force_rotation_degrees=0)
         self._debug(
             "\n".join(
                 [

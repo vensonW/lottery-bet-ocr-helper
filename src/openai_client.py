@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Callable
 
-from image_utils import prepare_image_for_ai
+from image_utils import prepare_image_for_ai, rotate_image_file_in_place
 from models import PreparedImage
 from schema import LOTTERY_OCR_SCHEMA
 
@@ -67,13 +68,31 @@ class LotteryOcrClient:
             self.debug_callback(message)
 
     def analyze_image(self, image_path: Path) -> tuple[dict[str, Any], PreparedImage]:
-        prepared = prepare_image_for_ai(image_path, max_side=self.max_image_side)
+        rotation_degrees = self._detect_image_rotation(image_path)
+        if rotation_degrees:
+            self._debug(f"图片方向：{image_path.name} 是倒的或方向异常，本地先旋转 {rotation_degrees} 度后再发给 AI 分析")
+        else:
+            self._debug(f"图片方向：{image_path.name} 是正的，不旋转")
+        if rotation_degrees:
+            if rotate_image_file_in_place(image_path, rotation_degrees):
+                self._debug(f"Original image rotated in place: {image_path.name}, backup: {image_path.name}.bak")
+            rotation_degrees = 0
+        prepared = prepare_image_for_ai(
+            image_path,
+            max_side=self.max_image_side,
+            force_rotation_degrees=rotation_degrees,
+        )
         prompt = (
             f"请识别当前图片：{image_path.name}\n"
             f"发送给你的图片像素尺寸为：宽 {prepared.sent_width}，高 {prepared.sent_height}。\n"
             "如果图片内容上下颠倒或方向异常，请先按人类正常阅读方向理解后再识别。\n"
             "所有 crop_hint 坐标必须基于这个像素尺寸，左上角为(0,0)，单位为像素。\n"
             "请严格按 SKILL.md 和 JSON Schema 返回结果。不要输出 Markdown 或解释文字。"
+        )
+        prompt += (
+            "\nCrop hint requirement: every crop_hint MUST include the complete visible betting text for that row: "
+            "all digits, play-type words, amount, separators, and a small margin on all sides. "
+            "Never crop through handwriting. If unsure, make the crop_hint larger rather than tighter."
         )
         instructions = (
             "你必须严格执行下面的 SKILL.md 规则，并输出符合 JSON Schema 的结构化数据。\n\n"
@@ -132,6 +151,47 @@ class LotteryOcrClient:
         except json.JSONDecodeError as exc:
             raise ValueError(f"AI返回不是合法JSON：{text[:500]}") from exc
         return data, prepared
+
+    def _detect_image_rotation(self, image_path: Path) -> int:
+        prepared = prepare_image_for_ai(image_path, max_side=768, force_rotation_degrees=0)
+        local_prepared = prepare_image_for_ai(image_path, max_side=768)
+        prompt = (
+            "判断这张手写投注图片需要顺时针旋转多少度才能让文字正常阅读。"
+            "只回答一个数字：0、90、180、270。"
+        )
+        try:
+            response = self.client.responses.create(
+                model=self.model,
+                input=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": prompt},
+                            {
+                                "type": "input_image",
+                                "image_url": prepared.data_url,
+                                "detail": "low",
+                            },
+                        ],
+                    }
+                ],
+                max_output_tokens=20,
+                store=False,
+            )
+            text = self._extract_output_text(response).strip()
+            match = re.search(r"(?<!\d)(270|180|90|0)(?!\d)", text)
+            if match:
+                value = int(match.group(1))
+                self._debug(f"AI direction check: {image_path.name} rotate original image {value} degrees, raw reply: {text}")
+                return value
+            for value in (270, 180, 90, 0):
+                if str(value) in text:
+                    self._debug(f"AI方向判断：{image_path.name} 需要旋转 {value} 度，原始回复：{text}")
+                    return value
+            self._debug(f"AI方向判断无法解析，使用本地结果 {prepared.rotation_degrees} 度，原始回复：{text}")
+        except Exception as exc:
+            self._debug(f"AI方向判断失败，使用本地结果 {prepared.rotation_degrees} 度：{type(exc).__name__}: {exc}")
+        return local_prepared.rotation_degrees
 
     @staticmethod
     def _extract_output_text(response: Any) -> str:

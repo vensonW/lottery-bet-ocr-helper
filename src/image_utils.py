@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+import shutil
 from io import BytesIO
 from pathlib import Path
 
@@ -11,6 +12,24 @@ from models import CropHint, PreparedImage
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+
+
+def _normalize_rotation_degrees(rotation_degrees: int | None) -> int:
+    value = int(rotation_degrees or 0) % 360
+    if value in {0, 90, 180, 270}:
+        return value
+    return min((0, 90, 180, 270), key=lambda option: abs(option - value))
+
+
+def _apply_rotation(img: Image.Image, rotation_degrees: int) -> Image.Image:
+    rotation_degrees = _normalize_rotation_degrees(rotation_degrees)
+    if rotation_degrees == 90:
+        return img.transpose(Image.Transpose.ROTATE_270)
+    if rotation_degrees == 180:
+        return img.transpose(Image.Transpose.ROTATE_180)
+    if rotation_degrees == 270:
+        return img.transpose(Image.Transpose.ROTATE_90)
+    return img
 
 
 def _dark_pixel_center_y(img: Image.Image) -> float | None:
@@ -34,11 +53,10 @@ def _dark_pixel_center_y(img: Image.Image) -> float | None:
 
 
 def _auto_rotate_if_obviously_upside_down(img: Image.Image) -> tuple[Image.Image, int]:
-    """暂不做自动 180 度旋转。
-
-    之前用深色像素重心判断倒置，容易把正常票据误判成倒置，导致 Excel 核查截图全倒过来。
-    现在只做 EXIF 方向校正；无 EXIF 的倒置图片交给视觉模型按正常阅读方向理解。
-    """
+    """Rotate 180 degrees only when dark handwriting is clearly bottom-heavy."""
+    center_y = _dark_pixel_center_y(img)
+    if center_y is not None and center_y >= 0.72:
+        return img.transpose(Image.Transpose.ROTATE_180), 180
     return img, 0
 
 
@@ -63,10 +81,19 @@ def _mime_for_format(fmt: str | None, path: Path) -> str:
     return mimetypes.guess_type(str(path))[0] or "image/jpeg"
 
 
-def prepare_image_for_ai(image_path: Path, max_side: int = 2048, jpeg_quality: int = 90) -> PreparedImage:
+def prepare_image_for_ai(
+    image_path: Path,
+    max_side: int = 2048,
+    jpeg_quality: int = 90,
+    force_rotation_degrees: int | None = None,
+) -> PreparedImage:
     with Image.open(image_path) as img:
         img = ImageOps.exif_transpose(img)
-        img, rotation_degrees = _auto_rotate_if_obviously_upside_down(img)
+        if force_rotation_degrees is None:
+            img, rotation_degrees = _auto_rotate_if_obviously_upside_down(img)
+        else:
+            rotation_degrees = _normalize_rotation_degrees(force_rotation_degrees)
+            img = _apply_rotation(img, rotation_degrees)
         original_width, original_height = img.size
         sent = img
         if max(original_width, original_height) > max_side > 0:
@@ -102,7 +129,39 @@ def prepare_image_for_ai(image_path: Path, max_side: int = 2048, jpeg_quality: i
     )
 
 
-def clamp_crop_to_original(hint: CropHint | None, prepared: PreparedImage, padding_ratio: float = 0.35) -> tuple[int, int, int, int] | None:
+def rotate_image_file_in_place(image_path: Path, rotation_degrees: int, jpeg_quality: int = 95) -> bool:
+    rotation_degrees = _normalize_rotation_degrees(rotation_degrees)
+    if rotation_degrees == 0:
+        return False
+
+    backup_path = image_path.with_name(f"{image_path.name}.bak")
+    if not backup_path.exists():
+        shutil.copy2(image_path, backup_path)
+
+    with Image.open(image_path) as img:
+        img = ImageOps.exif_transpose(img)
+        img = _apply_rotation(img, rotation_degrees)
+        fmt = (img.format or image_path.suffix.replace(".", "")).upper()
+        if fmt not in {"JPEG", "PNG", "WEBP"}:
+            fmt = "JPEG"
+        save_kwargs = {}
+        if fmt == "JPEG":
+            if img.mode not in {"RGB", "L"}:
+                img = img.convert("RGB")
+            save_kwargs = {"quality": jpeg_quality, "optimize": True}
+        elif fmt == "PNG":
+            save_kwargs = {"optimize": True}
+        img.save(image_path, format=fmt, **save_kwargs)
+    return True
+
+
+def clamp_crop_to_original(
+    hint: CropHint | None,
+    prepared: PreparedImage,
+    padding_ratio: float = 0.65,
+    image_width: int | None = None,
+    image_height: int | None = None,
+) -> tuple[int, int, int, int] | None:
     if hint is None or not hint.is_usable():
         return None
 
@@ -112,15 +171,24 @@ def clamp_crop_to_original(hint: CropHint | None, prepared: PreparedImage, paddi
     h = int(round(hint.h * prepared.scale_y))
     # AI 给出的局部框有时偏紧：横向多留，避免金额或玩法字被裁掉；
     # 纵向也多留一些，避免截图只剩半行；但保留上限，尽量不截到上下多组数字。
-    pad_x = max(90, int(w * max(padding_ratio, 0.42)))
-    pad_y = max(32, min(80, int(h * 0.55)))
-    max_total_height = max(130, min(260, int(h * 2.25)))
-    if h + pad_y * 2 > max_total_height:
-        pad_y = max(8, (max_total_height - h) // 2)
+    pad_x = max(160, int(w * max(padding_ratio, 0.65)))
+    # AI sometimes anchors the crop above the actual handwriting row. Keep more
+    # room below the hint so the target row is still visible in Excel.
+    pad_top = max(46, min(110, int(h * 0.65)))
+    pad_bottom = max(260, min(520, int(h * 2.6)))
+    max_total_height = max(360, min(820, int(h * 5.4)))
+    if h + pad_top + pad_bottom > max_total_height:
+        overflow = h + pad_top + pad_bottom - max_total_height
+        reduce_top = min(max(0, pad_top - 24), overflow // 3)
+        pad_top -= reduce_top
+        overflow -= reduce_top
+        pad_bottom = max(140, pad_bottom - overflow)
     left = max(0, x - pad_x)
-    top = max(0, y - pad_y)
-    right = min(prepared.original_width, x + w + pad_x)
-    bottom = min(prepared.original_height, y + h + pad_y)
+    top = max(0, y - pad_top)
+    image_width = image_width or prepared.original_width
+    image_height = image_height or prepared.original_height
+    right = min(image_width, x + w + pad_x)
+    bottom = min(image_height, y + h + pad_bottom)
 
     if right - left <= 5 or bottom - top <= 5:
         return None
@@ -133,16 +201,15 @@ def save_review_crop(
     hint: CropHint | None,
     output_path: Path,
     max_width: int = 920,
-    max_height: int = 460,
+    max_height: int = 700,
     upscale_factor: float = 1.0,
 ) -> tuple[Path, bool]:
     """保存核查截图。返回：(截图路径, 是否使用整图兜底)。"""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with Image.open(image_path) as img:
         img = ImageOps.exif_transpose(img)
-        if prepared.rotation_degrees == 180:
-            img = img.transpose(Image.Transpose.ROTATE_180)
-        crop_box = clamp_crop_to_original(hint, prepared)
+        img = _apply_rotation(img, prepared.rotation_degrees)
+        crop_box = clamp_crop_to_original(hint, prepared, image_width=img.width, image_height=img.height)
         used_full_image = crop_box is None
         if crop_box is not None:
             img = img.crop(crop_box)
