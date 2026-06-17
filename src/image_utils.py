@@ -172,15 +172,15 @@ def clamp_crop_to_original(
     # AI 给出的局部框有时偏紧：横向多留，避免金额或玩法字被裁掉；
     # 纵向也多留一些，避免截图只剩半行；但保留上限，尽量不截到上下多组数字。
     pad_x = max(110, int(w * max(padding_ratio, 0.45)))
-    pad_top = max(72, min(130, int(h * 0.95)))
-    pad_bottom = max(42, min(95, int(h * 0.55)))
-    max_total_height = max(240, min(420, int(h * 3.4)))
+    pad_top = max(92, min(150, int(h * 1.1)))
+    pad_bottom = max(78, min(135, int(h * 0.8)))
+    max_total_height = max(280, min(460, int(h * 3.9)))
     if h + pad_top + pad_bottom > max_total_height:
         overflow = h + pad_top + pad_bottom - max_total_height
-        reduce_bottom = min(max(0, pad_bottom - 32), overflow)
+        reduce_bottom = min(max(0, pad_bottom - 56), overflow)
         pad_bottom -= reduce_bottom
         overflow -= reduce_bottom
-        pad_top = max(56, pad_top - overflow)
+        pad_top = max(72, pad_top - overflow)
     left = max(0, x - pad_x)
     top = max(0, y - pad_top)
     image_width = image_width or prepared.original_width
