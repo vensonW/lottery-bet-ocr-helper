@@ -90,14 +90,27 @@ class LotteryOcrClient:
             "请严格按 SKILL.md 和 JSON Schema 返回结果。不要输出 Markdown 或解释文字。"
         )
         prompt += (
-            "\nCrop hint requirement: for every crop_hint, first locate the bounding box of the actual dark handwritten "
-            "betting text in the analyzed image. Use the leftmost, rightmost, topmost, and bottommost pixels of the "
-            "current row's dark betting handwriting as the basis for x, y, w, h. Ignore red boxes/rectangles, red "
-            "circles, and other red annotations; they are human marks, not betting content. Include all digits, "
-            "play-type words, amount, separators/dashes, and a small margin on all sides. Do not use red boxes, "
-            "red circles, blank paper, names, titles, or neighboring rows as the bounding box boundary. Never crop "
-            "through handwriting. If unsure, "
-            "make the crop_hint larger rather than tighter."
+            "\nCrop hint requirement: return crop_hint as the final crop rectangle that the program can use directly. "
+            "Do not assume the program will expand or fix your rectangle later. For every crop_hint, first locate the "
+            "bounding box of the actual dark handwritten betting text in the analyzed image. Use the leftmost, "
+            "rightmost, topmost, and bottommost pixels of the current row's dark betting handwriting as the basis for "
+            "x, y, w, h, then add margin inside crop_hint: use a visibly larger top margin than bottom margin because "
+            "handwriting is often clipped at the top. Ignore red boxes/rectangles, red "
+            "circles, and other red annotations; they are human marks, not betting content. Completely ignore all "
+            "non-betting label text such as names, place names, shop/store/supermarket names, headers, signatures, "
+            "payee/customer notes, titles, totals, and standalone words at the top of the page; they must not become "
+            "items and must not shift row order or crop_hint coordinates. "
+            "Include all digits, play-type words, amount, separators/dashes, and a margin on all sides, with extra "
+            "top margin. Do not "
+            "use red boxes, red circles, blank paper, names, titles, or neighboring rows as the bounding box boundary. "
+            "Never crop through handwriting. If a non-betting label is near the row, keep it outside crop_hint unless it "
+            "physically overlaps the betting text. Top margin is especially important: crop_hint.y must be above the "
+            "topmost dark pixels of the current betting row, never at or below the handwriting strokes. For the first "
+            "betting row directly below a non-betting label such as a name, place name, shop name, or supermarket word, "
+            "start crop_hint.y in the blank gap between that label and the betting row; leave a visibly clear top margin, "
+            "roughly 50-100 sent-image pixels when space allows. If the gap is small, complete betting text is more "
+            "important than excluding every pixel of the nearby non-betting label. "
+            "If unsure, make crop_hint slightly larger around the current row, but do not include another betting row."
         )
         instructions = (
             "你必须严格执行下面的 SKILL.md 规则，并输出符合 JSON Schema 的结构化数据。\n\n"
@@ -155,29 +168,78 @@ class LotteryOcrClient:
             data = json.loads(text)
         except json.JSONDecodeError as exc:
             raise ValueError(f"AI返回不是合法JSON：{text[:500]}") from exc
+        self._log_rotation_hint_from_ai_notes(data, image_path)
         return data, prepared
 
+    def _log_rotation_hint_from_ai_notes(
+        self,
+        data: dict[str, Any],
+        image_path: Path,
+    ) -> None:
+        notes = str(data.get("image_level_notes") or "")
+        if self._notes_indicate_upside_down(notes):
+            self._debug(f"AI识别结果提示图片倒置：{image_path.name}；备注：{notes}")
+
+    @staticmethod
+    def _notes_indicate_upside_down(notes: str) -> bool:
+        if not notes:
+            return False
+        normalized = re.sub(r"\s+", "", notes.lower())
+        positive_patterns = (
+            "上下颠倒",
+            "图片倒置",
+            "整张图倒",
+            "整张图片倒",
+            "旋转180",
+            "180度",
+            "upside",
+            "upside-down",
+            "rotated180",
+            "rotate180",
+        )
+        negative_patterns = (
+            "未上下颠倒",
+            "没有上下颠倒",
+            "不是上下颠倒",
+            "无需旋转180",
+            "不需要旋转180",
+        )
+        return any(pattern in normalized for pattern in positive_patterns) and not any(
+            pattern in normalized for pattern in negative_patterns
+        )
+
     def _detect_image_rotation(self, image_path: Path) -> int:
-        prepared = prepare_image_for_ai(image_path, max_side=768, force_rotation_degrees=0)
         local_prepared = prepare_image_for_ai(image_path, max_side=768)
         prompt = (
-            "判断这张手写投注图片需要顺时针旋转多少度才能让文字正常阅读。"
+            "下面四张图片是同一张手写投注图片分别按顺时针旋转 0、90、180、270 度后的低清预览。\n"
+            "请选择哪一个旋转角度下，纸面上的黑色/深色手写投注文字对人类来说是正向、最容易正常阅读的。\n"
+            "忽略红色圈注、红色合计、拍摄阴影和空白纸面，只看黑色/深色手写文字方向。\n"
+            "如果原图是上下颠倒，通常应该选择 180。\n"
             "只回答一个数字：0、90、180、270。"
         )
         try:
+            variants: list[tuple[int, PreparedImage]] = [
+                (rotation, prepare_image_for_ai(image_path, max_side=768, force_rotation_degrees=rotation))
+                for rotation in (0, 90, 180, 270)
+            ]
+            content: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+            for rotation, prepared in variants:
+                content.extend(
+                    [
+                        {"type": "input_text", "text": f"顺时针旋转 {rotation} 度后的预览："},
+                        {
+                            "type": "input_image",
+                            "image_url": prepared.data_url,
+                            "detail": "low",
+                        },
+                    ]
+                )
             response = self.client.responses.create(
                 model=self.model,
                 input=[
                     {
                         "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": prompt},
-                            {
-                                "type": "input_image",
-                                "image_url": prepared.data_url,
-                                "detail": "low",
-                            },
-                        ],
+                        "content": content,
                     }
                 ],
                 max_output_tokens=20,
@@ -188,14 +250,18 @@ class LotteryOcrClient:
             if match:
                 value = int(match.group(1))
                 self._debug(f"AI direction check: {image_path.name} rotate original image {value} degrees, raw reply: {text}")
+                if value:
+                    self._debug(f"AI判断图片倒置或方向异常：{image_path.name}，需要旋转 {value} 度")
                 return value
             for value in (270, 180, 90, 0):
                 if str(value) in text:
                     self._debug(f"AI方向判断：{image_path.name} 需要旋转 {value} 度，原始回复：{text}")
+                    if value:
+                        self._debug(f"AI判断图片倒置或方向异常：{image_path.name}，需要旋转 {value} 度")
                     return value
-            self._debug(f"AI方向判断无法解析，使用本地结果 {prepared.rotation_degrees} 度，原始回复：{text}")
+            self._debug(f"AI方向判断无法解析，使用本地结果 {local_prepared.rotation_degrees} 度，原始回复：{text}")
         except Exception as exc:
-            self._debug(f"AI方向判断失败，使用本地结果 {prepared.rotation_degrees} 度：{type(exc).__name__}: {exc}")
+            self._debug(f"AI方向判断失败，使用本地结果 {local_prepared.rotation_degrees} 度：{type(exc).__name__}: {exc}")
         return local_prepared.rotation_degrees
 
     @staticmethod

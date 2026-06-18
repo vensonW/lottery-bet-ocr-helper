@@ -169,18 +169,18 @@ def clamp_crop_to_original(
     y = int(round(hint.y * prepared.scale_y))
     w = int(round(hint.w * prepared.scale_x))
     h = int(round(hint.h * prepared.scale_y))
-    # AI 给出的局部框有时偏紧：横向多留，避免金额或玩法字被裁掉；
-    # 纵向也多留一些，避免截图只剩半行；但保留上限，尽量不截到上下多组数字。
-    pad_x = max(110, int(w * max(padding_ratio, 0.45)))
-    pad_top = max(92, min(150, int(h * 1.1)))
-    pad_bottom = max(78, min(135, int(h * 0.8)))
-    max_total_height = max(280, min(460, int(h * 3.9)))
+    # crop_hint 应由 AI 返回最终截图范围；本地只偏向上方做兜底，
+    # 避免常见的上沿贴字，同时尽量不把下一行带进来。
+    pad_x = max(28, min(70, int(w * 0.12)))
+    pad_top = max(45, min(95, int(h * 0.34)))
+    pad_bottom = max(18, min(40, int(h * 0.14)))
+    max_total_height = max(200, min(380, int(h * 2.15)))
     if h + pad_top + pad_bottom > max_total_height:
         overflow = h + pad_top + pad_bottom - max_total_height
-        reduce_bottom = min(max(0, pad_bottom - 56), overflow)
+        reduce_bottom = min(max(0, pad_bottom - 14), overflow)
         pad_bottom -= reduce_bottom
         overflow -= reduce_bottom
-        pad_top = max(72, pad_top - overflow)
+        pad_top = max(36, pad_top - overflow)
     left = max(0, x - pad_x)
     top = max(0, y - pad_top)
     image_width = image_width or prepared.original_width

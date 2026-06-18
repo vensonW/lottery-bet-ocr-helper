@@ -53,19 +53,19 @@ LOTTERY_OCR_SCHEMA = {
                         "properties": {
                             "x": {
                                 "type": "integer",
-                                "description": "Left edge of the bounding box for this row's dark handwritten betting text, ignoring red boxes/rectangles/circles.",
+                                "description": "Final crop rectangle left edge for this row's dark handwritten betting text, with a small margin, ignoring red boxes/rectangles/circles and non-betting labels such as names, place names, shop/store/supermarket names, titles, and headers.",
                             },
                             "y": {
                                 "type": "integer",
-                                "description": "Top edge of the bounding box for this row's dark handwritten betting text, ignoring red boxes/rectangles/circles.",
+                                "description": "Final crop rectangle top edge. It must be above the topmost dark pixels of the current betting row and leave visible top margin; for the first betting row below any non-betting label such as a name, place name, shop/store/supermarket name, title, or header, start in the blank gap above the betting row when possible.",
                             },
                             "w": {
                                 "type": "integer",
-                                "description": "Width from the leftmost to rightmost pixels of this row's dark handwritten betting text, ignoring red boxes/rectangles/circles.",
+                                "description": "Final crop rectangle width, including the full current betting row plus a small margin, without neighboring betting rows.",
                             },
                             "h": {
                                 "type": "integer",
-                                "description": "Height from the topmost to bottommost pixels of this row's dark handwritten betting text, ignoring red boxes/rectangles/circles.",
+                                "description": "Final crop rectangle height, including the full current betting row plus visible top/bottom margin, without neighboring betting rows.",
                             },
                         },
                         "required": ["x", "y", "w", "h"],

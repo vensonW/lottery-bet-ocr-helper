@@ -23,6 +23,7 @@ PREVIOUS_HEADERS = ["序号", "原图识别内容", "玩法判定", "标准化�
 
 DETAIL_WIDTHS = [8, 26, 14, 32, 120, 12, 14, 48, 42]
 REVIEW_WIDTHS = [8, 42, 30, 72, 112, 20, 20, 20]
+
 PLAY_TYPE_SORT_ORDER = {
     "胆码": 1,
     "组三": 2,
@@ -182,6 +183,9 @@ def write_workbook(results: list[ImageTaskResult], output_file: Path, replace_im
     _write_detail_sheet(ws_detail, rows, image_path_map=image_path_map, output_file=output_file)
     _write_summary_sheet(ws_summary, results, rows, summary)
     _write_review_images_sheet(ws_images, rows, image_path_map=image_path_map, output_file=output_file)
+    _resort_detail_sheet_rows(ws_detail, image_path_map=image_path_map, output_file=output_file)
+    _apply_image_file_hyperlinks(ws_detail, image_path_map, output_file)
+    _refresh_detail_filter_and_table(ws_detail)
 
     wb.save(output_file)
     return output_file
@@ -262,6 +266,9 @@ def _sort_items_for_excel(rows: list[OcrItem]) -> list[OcrItem]:
         rows,
         key=lambda item: (
             PLAY_TYPE_SORT_ORDER.get(item.play_type, 98),
+            item.standardized or "",
+            int(item.amount or 0),
+            item.raw_text or "",
             item.image_file or "",
             item.image_index,
             item.item_index,
@@ -629,7 +636,8 @@ def _resort_detail_sheet_rows(ws, image_path_map: dict[str, Path] | None = None,
             ws.cell(row=row_idx, column=7).font = Font(color="C00000", bold=True)
 
         image_key = _detail_row_identity(item)
-        old_image = images_by_old_row.get(image_key)
+        old_images = images_by_old_row.get(image_key) or []
+        old_image = old_images.pop(0) if old_images else None
         if item.crop_path and item.crop_path.exists():
             _attach_review_image(ws, item, row_idx, col_idx=5)
         elif old_image:
@@ -640,8 +648,8 @@ def _resort_detail_sheet_rows(ws, image_path_map: dict[str, Path] | None = None,
             ws.row_dimensions[row_idx].height = 28
 
 
-def _collect_detail_row_images(ws) -> dict[tuple, object]:
-    result: dict[tuple, object] = {}
+def _collect_detail_row_images(ws) -> dict[tuple, list[object]]:
+    result: dict[tuple, list[object]] = {}
     for image in getattr(ws, "_images", []):
         try:
             row_idx = image.anchor._from.row + 1
@@ -654,7 +662,7 @@ def _collect_detail_row_images(ws) -> dict[tuple, object]:
                 _cell_text(ws, row_idx, 8),
                 _cell_text(ws, row_idx, 9),
             )
-            result[key] = image
+            result.setdefault(key, []).append(image)
         except Exception:
             continue
     return result
